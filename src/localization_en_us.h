@@ -341,7 +341,7 @@ static const utf8_t *_localization_string_array_en_us[LOCALIZATION_ID_COUNT] =
 	"PNG", // LOCALIZATION_ID_MERGE_FMT_PNG,
 	"JPG", // LOCALIZATION_ID_MERGE_FMT_JPG,
 	"images, output size:", // LOCALIZATION_ID_MERGE_INFO,
-	"No images yet. Click "Add Images" and pick 2 or more; sources stay 1:1.", // LOCALIZATION_ID_MERGE_INFO_EMPTY,
+	"No images yet. Click Add Images and pick 2 or more; sources stay 1:1.", // LOCALIZATION_ID_MERGE_INFO_EMPTY,
 	"Please add at least 2 images before exporting.", // LOCALIZATION_ID_MERGE_NEED_TWO,
 	"Select images to merge (multiple selection)", // LOCALIZATION_ID_MERGE_OPEN_CAPTION,
 	"Save merged image", // LOCALIZATION_ID_MERGE_SAVE_CAPTION,
