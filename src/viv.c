@@ -398,6 +398,26 @@ typedef struct _viv_reply_load_image_first_frame_s
 	
 }_viv_reply_load_image_first_frame_t;
 
+// fork: owner-drawn dark menus (icon gutter, separators, checked state)
+typedef struct _viv_od_item_s
+{
+	wchar_t text[128];
+	wchar_t key[32];
+	int separator;
+	int submenu;
+	int checked;
+	int disabled;
+} _viv_od_item_t;
+
+static _viv_od_item_t _viv_od_menu_items[320];
+static _viv_od_item_t _viv_od_ctx_items[128];
+static int _viv_od_menu_count = 0;
+static int _viv_od_ctx_count = 0;
+static int _viv_od_wlen(const wchar_t *s);
+static void _viv_menu_ownerdraw_convert(HMENU hmenu,_viv_od_item_t *items,int item_max,int *item_count,int skip_self);
+static void _viv_menu_ownerdraw_apply_main(HMENU hmenu);
+static void _viv_menu_ownerdraw_apply_popup(HMENU hmenu);
+
 typedef struct _viv_playlist_s
 {
 	struct _viv_playlist_s *next;
@@ -2521,6 +2541,7 @@ debug_printf("SWP %d %d %d %d\n",rect.left,rect.top,rect.right - rect.left,rect.
 			config_dark_theme = !config_dark_theme;
 			config_save_settings(config_appdata);
 			_viv_apply_dark_theme();
+			_viv_menu_ownerdraw_apply_main(_viv_hmenu);
 			break;
 
 		case VIV_ID_VIEW_FILE_PROGRESS:
@@ -3603,6 +3624,8 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 			
 			_viv_in_popup_menu = 1;
 			
+			_viv_menu_ownerdraw_apply_popup(hmenu); // fork
+
 			TrackPopupMenu(hmenu,tpm_flags,pt.x,pt.y,0,hwnd,0);
 
 			// start the hide cursor timer again.
@@ -4057,6 +4080,15 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 
 						if (nmcd->dwDrawStage == CDDS_PREPAINT)
 						{
+							HBRUSH _hb;
+							RECT _rc;
+
+							GetClientRect(_viv_status_hwnd,&_rc);
+							_hb = CreateSolidBrush(RGB(36,39,44));
+							FillRect(nmcd->hdc,&_rc,_hb);
+							DeleteObject(_hb);
+							SetTextColor(nmcd->hdc,RGB(216,221,226));
+							SetBkColor(nmcd->hdc,RGB(36,39,44));
 							return CDRF_NOTIFYITEMDRAW;
 						}
 
@@ -4109,6 +4141,213 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 			
 			break;
 			
+				case WM_MEASUREITEM:
+		{
+			MEASUREITEMSTRUCT *mis;
+			_viv_od_item_t *it;
+			HDC hdc;
+			HFONT oldfont;
+			SIZE size;
+			int wide;
+
+			mis = (MEASUREITEMSTRUCT *)lParam;
+
+			if (mis->CtlType == ODT_MENU)
+			{
+				it = (_viv_od_item_t *)mis->itemData;
+
+				if (it && it->separator)
+				{
+					mis->itemWidth = 120;
+					mis->itemHeight = 9;
+					return TRUE;
+				}
+
+				wide = 44;
+				hdc = GetDC(0);
+
+				if (hdc)
+				{
+					oldfont = SelectObject(hdc,(HFONT)GetStockObject(DEFAULT_GUI_FONT));
+
+					if (it)
+					{
+						if (GetTextExtentPoint32W(hdc,it->text,_viv_od_wlen(it->text),&size))
+						{
+							wide += size.cx;
+						}
+
+						if (*it->key)
+						{
+							if (GetTextExtentPoint32W(hdc,it->key,_viv_od_wlen(it->key),&size))
+							{
+								wide += size.cx + 26;
+							}
+						}
+					}
+
+					SelectObject(hdc,oldfont);
+					ReleaseDC(0,hdc);
+				}
+
+				if (wide < 170) wide = 170;
+				if (wide > 420) wide = 420;
+
+				mis->itemWidth = wide;
+				mis->itemHeight = 25;
+				return TRUE;
+			}
+
+			break;
+		}
+
+		case WM_DRAWITEM:
+		{
+			DRAWITEMSTRUCT *dis;
+			_viv_od_item_t *it;
+			HBRUSH hb;
+			HPEN hp;
+			RECT rc;
+			RECT ir;
+			RECT tr;
+			HFONT oldfont;
+			COLORREF bg;
+			COLORREF fg;
+			int dark;
+			int selected;
+			int checked;
+
+			dis = (DRAWITEMSTRUCT *)lParam;
+
+			if (dis->CtlType == ODT_MENU)
+			{
+				it = (_viv_od_item_t *)dis->itemData;
+				rc = dis->rcItem;
+				dark = config_dark_theme ? 1 : 0;
+				selected = (dis->itemState & ODS_SELECTED) ? 1 : 0;
+				checked = ((dis->itemState & ODS_CHECKED) || (it && it->checked)) ? 1 : 0;
+
+				if (dark)
+				{
+					bg = selected ? RGB(32,94,112) : RGB(34,37,42);
+					fg = RGB(226,231,236);
+				}
+				else
+				{
+					bg = selected ? RGB(204,228,247) : RGB(255,255,255);
+					fg = RGB(24,26,28);
+				}
+
+				hb = CreateSolidBrush(bg);
+				FillRect(dis->hdc,&rc,hb);
+				DeleteObject(hb);
+
+				if ((!it) || (it->separator))
+				{
+					hp = CreatePen(PS_SOLID,1,dark ? RGB(62,67,74) : RGB(224,224,224));
+					if (hp)
+					{
+						HGDIOBJ oldpen;
+						oldpen = SelectObject(dis->hdc,hp);
+						MoveToEx(dis->hdc,rc.left + 8,rc.top + (rc.bottom - rc.top) / 2,0);
+						LineTo(dis->hdc,rc.right - 8,rc.top + (rc.bottom - rc.top) / 2);
+						SelectObject(dis->hdc,oldpen);
+						DeleteObject(hp);
+					}
+					return TRUE;
+				}
+
+				// icon gutter
+				ir.left = rc.left + 6;
+				ir.top = rc.top + 4;
+				ir.right = ir.left + 17;
+				ir.bottom = ir.top + 17;
+				hb = CreateSolidBrush(dark ? (selected ? RGB(52,126,146) : RGB(50,56,64)) : RGB(232,238,244));
+				FillRect(dis->hdc,&ir,hb);
+				DeleteObject(hb);
+
+				oldfont = SelectObject(dis->hdc,(HFONT)GetStockObject(DEFAULT_GUI_FONT));
+				SetBkMode(dis->hdc,TRANSPARENT);
+
+				// first visible glyph as a lightweight "icon"
+				if (*it->text)
+				{
+					wchar_t glyph[2];
+					RECT gr;
+
+					glyph[0] = it->text[0];
+					glyph[1] = 0;
+					gr = ir;
+					gr.left += 1;
+					SetTextColor(dis->hdc,dark ? RGB(150,205,220) : RGB(60,100,120));
+					DrawTextW(dis->hdc,glyph,1,&gr,DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+				}
+
+				if (checked)
+				{
+					hp = CreatePen(PS_SOLID,2,dark ? RGB(96,200,190) : RGB(20,110,180));
+					if (hp)
+					{
+						HGDIOBJ oldpen;
+						int cx;
+						int cy;
+
+						cx = rc.left + 14;
+						cy = rc.top + (rc.bottom - rc.top) / 2;
+						oldpen = SelectObject(dis->hdc,hp);
+						MoveToEx(dis->hdc,cx - 4,cy,0);
+						LineTo(dis->hdc,cx - 1,cy + 3);
+						LineTo(dis->hdc,cx + 5,cy - 4);
+						SelectObject(dis->hdc,oldpen);
+						DeleteObject(hp);
+					}
+				}
+
+				tr = rc;
+				tr.left += 32;
+				tr.right -= 10;
+				SetTextColor(dis->hdc,it->disabled ? (dark ? RGB(105,112,120) : RGB(160,160,160)) : fg);
+				DrawTextW(dis->hdc,it->text,-1,&tr,DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+				if (*it->key)
+				{
+					tr = rc;
+					tr.right -= 12;
+					tr.left = tr.right - 110;
+					SetTextColor(dis->hdc,dark ? RGB(140,152,162) : RGB(110,110,110));
+					DrawTextW(dis->hdc,it->key,-1,&tr,DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+				}
+
+				if (it->submenu)
+				{
+					hp = CreatePen(PS_SOLID,1,dark ? RGB(170,180,190) : RGB(90,90,90));
+					if (hp)
+					{
+						HGDIOBJ oldpen;
+						int x;
+						int y;
+						int k;
+
+						x = rc.right - 10;
+						y = rc.top + (rc.bottom - rc.top) / 2;
+						oldpen = SelectObject(dis->hdc,hp);
+						for(k=0;k<4;k++)
+						{
+							MoveToEx(dis->hdc,x - 4 + k,y - 4 + k,0);
+							LineTo(dis->hdc,x - 4 + k,y + 4 - k);
+						}
+						SelectObject(dis->hdc,oldpen);
+						DeleteObject(hp);
+					}
+				}
+
+				SelectObject(dis->hdc,oldfont);
+				return TRUE;
+			}
+
+			break;
+		}
+
 		case WM_COMMAND:
 		{
 			_viv_command(LOWORD(wParam));
@@ -5516,6 +5755,7 @@ static int _viv_init(int nCmdShow)
 	_viv_status_show(config_show_status);
 
 	_viv_apply_dark_theme(); // fork
+	_viv_menu_ownerdraw_apply_main(_viv_hmenu); // fork
 
 	_viv_controls_show(config_show_controls);
 	
@@ -7952,6 +8192,143 @@ static void _viv_apply_dark_theme(void)
 	}
 
 	InvalidateRect(_viv_hwnd,0,TRUE);
+}
+
+static int _viv_od_wlen(const wchar_t *s)
+{
+	int n;
+
+	n = 0;
+	while(s[n]) n++;
+
+	return n;
+}
+
+static void _viv_menu_ownerdraw_convert(HMENU hmenu,_viv_od_item_t *items,int item_max,int *item_count,int skip_self)
+{
+	int i;
+	int n;
+
+	n = GetMenuItemCount(hmenu);
+
+	for(i=0;i<n;i++)
+	{
+		MENUITEMINFOW mii;
+		MENUITEMINFOW set;
+		wchar_t buf[512];
+		HMENU sub;
+		UINT state;
+		_viv_od_item_t *it;
+		wchar_t *s;
+		wchar_t *d;
+		wchar_t *tab;
+
+		ZeroMemory(&mii,sizeof(mii));
+		mii.cbSize = sizeof(mii);
+		mii.fMask = MIIM_TYPE | MIIM_STATE | MIIM_SUBMENU;
+		mii.dwTypeData = buf;
+		mii.cch = 512;
+		*buf = 0;
+
+		if (!GetMenuItemInfoW(hmenu,i,TRUE,&mii))
+		{
+			continue;
+		}
+
+		sub = mii.hSubMenu;
+		state = mii.fState;
+
+		if (sub)
+		{
+			_viv_menu_ownerdraw_convert(sub,items,item_max,item_count,0);
+		}
+
+		if (skip_self)
+		{
+			continue;
+		}
+
+		if (*item_count >= item_max)
+		{
+			continue;
+		}
+
+		it = &items[(*item_count)++];
+		ZeroMemory(it,sizeof(_viv_od_item_t));
+
+		it->submenu = sub ? 1 : 0;
+		it->checked = (state & MFS_CHECKED) ? 1 : 0;
+		it->disabled = (state & (MFS_DISABLED | MFS_GRAYED)) ? 1 : 0;
+
+		if (mii.fType & MFT_SEPARATOR)
+		{
+			it->separator = 1;
+		}
+		else
+		{
+			tab = 0;
+			s = buf;
+			while(*s)
+			{
+				if (*s == L'\t')
+				{
+					tab = s;
+					*s = 0;
+					break;
+				}
+				s++;
+			}
+
+			d = it->text;
+			s = buf;
+			while(*s)
+			{
+				if (*s != L'&')
+				{
+					*d++ = *s;
+				}
+				s++;
+			}
+			*d = 0;
+
+			if (tab)
+			{
+				d = it->key;
+				s = tab + 1;
+				while(*s)
+				{
+					*d++ = *s;
+					s++;
+				}
+				*d = 0;
+			}
+		}
+
+		ZeroMemory(&set,sizeof(set));
+		set.cbSize = sizeof(set);
+		set.fMask = MIIM_FTYPE | MIIM_DATA;
+		set.fType = MFT_OWNERDRAW;
+		set.dwItemData = (ULONG_PTR)it;
+		SetMenuItemInfoW(hmenu,i,TRUE,&set);
+	}
+}
+
+static void _viv_menu_ownerdraw_apply_main(HMENU hmenu)
+{
+	if (!hmenu) return;
+	if (!config_dark_theme) return;
+
+	_viv_od_menu_count = 0;
+	_viv_menu_ownerdraw_convert(hmenu,_viv_od_menu_items,320,&_viv_od_menu_count,1);
+}
+
+static void _viv_menu_ownerdraw_apply_popup(HMENU hmenu)
+{
+	if (!hmenu) return;
+	if (!config_dark_theme) return;
+
+	_viv_od_ctx_count = 0;
+	_viv_menu_ownerdraw_convert(hmenu,_viv_od_ctx_items,128,&_viv_od_ctx_count,0);
 }
 
 static void _viv_edit_rotate(int counterclockwise)
@@ -11471,7 +11848,26 @@ static void _viv_status_update(void)
 				{
 					wchar_t dbuf[64];
 
-					string_printf(dbuf,"%04d-%02d-%02d %02d:%02d  ",st.wYear,st.wMonth,st.wDay,st.wHour,st.wMinute);
+					wchar_t nbuf[64];
+
+					string_format_number(dbuf,st.wYear);
+					string_cat_utf8(dbuf,(const utf8_t *)"-");
+					if (st.wMonth < 10) string_cat_utf8(dbuf,(const utf8_t *)"0");
+					string_format_number(nbuf,st.wMonth);
+					string_cat(dbuf,nbuf);
+					string_cat_utf8(dbuf,(const utf8_t *)"-");
+					if (st.wDay < 10) string_cat_utf8(dbuf,(const utf8_t *)"0");
+					string_format_number(nbuf,st.wDay);
+					string_cat(dbuf,nbuf);
+					string_cat_utf8(dbuf,(const utf8_t *)" ");
+					if (st.wHour < 10) string_cat_utf8(dbuf,(const utf8_t *)"0");
+					string_format_number(nbuf,st.wHour);
+					string_cat(dbuf,nbuf);
+					string_cat_utf8(dbuf,(const utf8_t *)":");
+					if (st.wMinute < 10) string_cat_utf8(dbuf,(const utf8_t *)"0");
+					string_format_number(nbuf,st.wMinute);
+					string_cat(dbuf,nbuf);
+					string_cat_utf8(dbuf,(const utf8_t *)"  ");
 					string_cat(prefix_buf,dbuf);
 				}
 			}
@@ -12687,6 +13083,8 @@ static HMENU _viv_create_menu(void)
 		}
 	}
 	
+	_viv_menu_ownerdraw_apply_main(hmenu); // fork
+
 	return hmenu;
 }
 
