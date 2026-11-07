@@ -115,6 +115,10 @@
 #ifndef _VIV_FORK_RESOURCE_ID_SHIM
 #define _VIV_FORK_RESOURCE_ID_SHIM
 
+#ifndef IDC_STATIC
+#define IDC_STATIC                               -1
+#endif
+
 #define IDC_ASSOCIATIONS_GROUPBOX                 IDC_STATIC
 #define IDC_ADD_KEY_BUTTON                       IDC_ADD_KEY
 #define IDC_EDIT_KEY_BUTTON                      IDC_EDIT_KEY
