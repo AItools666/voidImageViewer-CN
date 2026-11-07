@@ -113,6 +113,7 @@
 #define IDC_MERGE_PREVIEW_LABEL         1121
 #define IDC_MERGE_PREVIEW_HINT          1122
 
+#define IDC_MERGE_COMPACT                1123
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED

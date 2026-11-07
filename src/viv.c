@@ -16077,13 +16077,32 @@ typedef struct _viv_merge_state_s
 	int wides[VIV_MERGE_MAX_IMAGES];
 	int highs[VIV_MERGE_MAX_IMAGES];
 	int count;
-	int layout; // 0=auto 1=single row 2=single column 3=2 cols 4=3 cols 5=4 cols
+	int layout; // 0=auto 1=row 2=column 3=2col 4=3col 5=4col 6=free (draggable)
 	int gap;
 	int pad;
 	int bg;  // 0=white 1=black 2=transparent
 	int fmt; // 0=png 1=jpg
 	int out_wide;
 	int out_high;
+
+	// fork: canvas coordinates, shared by preview + exporter
+	int item_x[VIV_MERGE_MAX_IMAGES];
+	int item_y[VIV_MERGE_MAX_IMAGES];
+	int free_x[VIV_MERGE_MAX_IMAGES];
+	int free_y[VIV_MERGE_MAX_IMAGES];
+	int free_ready;
+	int free_touched;
+	int selected;
+	int drag_index;
+	int drag_off_x;
+	int drag_off_y;
+	double drag_scale;
+	int drag_cx;
+	int drag_cy;
+	double view_scale;
+	int view_cx;
+	int view_cy;
+	int view_valid;
 }_viv_merge_state_t;
 
 // Load one image through the existing GDI+ stream path. Caller owns *out_image.
@@ -16202,6 +16221,8 @@ static void _viv_merge_add_file(_viv_merge_state_t *st,const wchar_t *path)
 		st->wides[st->count] = w;
 		st->highs[st->count] = h;
 		st->count++;
+		st->free_ready = 0;
+		st->free_touched = 0;
 	}
 }
 
@@ -16414,11 +16435,275 @@ static void _viv_merge_item_xy(_viv_merge_state_t *st,int cols,int *col_w,int *r
 	*y += (row_h[r] - st->highs[i]) / 2;
 }
 
-static int _viv_merge_export(_viv_merge_state_t *st,const wchar_t *out_path)
+// ---------------------------------------------------------------------------
+// fork: free-form layout.
+// st->item_x / item_y hold the canvas position of every image. The preview and
+// the exporter both read them, so dragging a thumbnail in the preview changes
+// exactly what is written out. Every image is still blitted at its ORIGINAL
+// pixel size, so the merge stays lossless 1:1 (no resampling at all).
+// ---------------------------------------------------------------------------
+
+// Newton iteration, avoids pulling in math.h just for one sqrt().
+static double _viv_merge_sqrt(double v)
 {
-	int cols;
+	double x;
+	int i;
+	if (v <= 1.0)
+	{
+		return 1.0;
+	}
+	x = v;
+	for (i = 0;i < 32;i++)
+	{
+		x = (x + v / x) * 0.5;
+	}
+	return x;
+}
+
+// Compact shelf packing: images keep their own width/height and are packed
+// row by row. Unlike a grid there is no "widest image in the column" padding,
+// so a small image next to a large one no longer leaves a big empty cell.
+static void _viv_merge_compact(_viv_merge_state_t *st)
+{
+	__int64 total;
+	int i;
+	int max_w;
+	int target_w;
+	int x;
+	int y;
+	int row_h;
+	int w;
+	int h;
+
+	total = 0;
+	max_w = 1;
+	for (i = 0;i < st->count;i++)
+	{
+		total += (__int64)st->wides[i] * (__int64)st->highs[i];
+		if (st->wides[i] > max_w)
+		{
+			max_w = st->wides[i];
+		}
+	}
+	target_w = (int)_viv_merge_sqrt((double)total * 1.6); // aim at a 16:10 canvas
+	if (target_w < max_w) target_w = max_w;
+	if (target_w > 16000) target_w = 16000;
+
+	x = st->pad;
+	y = st->pad;
+	row_h = 0;
+	for (i = 0;i < st->count;i++)
+	{
+		w = st->wides[i];
+		h = st->highs[i];
+		if ((x > st->pad) && ((x + w) > (st->pad + target_w)))
+		{
+			x = st->pad;
+			y += row_h + st->gap;
+			row_h = 0;
+		}
+		st->free_x[i] = x;
+		st->free_y[i] = y;
+		x += w + st->gap;
+		if (h > row_h)
+		{
+			row_h = h;
+		}
+	}
+	st->free_ready = 1;
+	st->free_touched = 0;
+}
+
+// ONE geometry entry point: fills st->item_x/item_y and returns canvas size.
+static int _viv_merge_prepare(_viv_merge_state_t *st,int *out_wide,int *out_high)
+{
 	int col_w[VIV_MERGE_MAX_IMAGES];
 	int row_h[VIV_MERGE_MAX_IMAGES];
+	int W;
+	int H;
+	int cols;
+	int i;
+
+	if (st->count <= 0)
+	{
+		return 0;
+	}
+
+	if (st->layout == 6) // free layout
+	{
+		if (!st->free_ready)
+		{
+			_viv_merge_compact(st);
+		}
+		W = st->pad;
+		H = st->pad;
+		for (i = 0;i < st->count;i++)
+		{
+			st->item_x[i] = st->free_x[i];
+			st->item_y[i] = st->free_y[i];
+			if (st->free_x[i] + st->wides[i] > W) W = st->free_x[i] + st->wides[i];
+			if (st->free_y[i] + st->highs[i] > H) H = st->free_y[i] + st->highs[i];
+		}
+		W += st->pad;
+		H += st->pad;
+	}
+	else
+	{
+		cols = _viv_merge_choose_cols(st,col_w,row_h,&W,&H);
+		if (cols <= 0)
+		{
+			return 0;
+		}
+		for (i = 0;i < st->count;i++)
+		{
+			_viv_merge_item_xy(st,cols,col_w,row_h,i,&st->item_x[i],&st->item_y[i]);
+		}
+	}
+
+	if ((W <= 0) || (H <= 0) || (W > VIV_MERGE_MAX_DIM) || (H > VIV_MERGE_MAX_DIM))
+	{
+		return 0;
+	}
+	*out_wide = W;
+	*out_high = H;
+	return 1;
+}
+
+// Shared preview mapping. Draw code and hit testing MUST use the same numbers.
+static void _viv_merge_view_map(RECT *area,int W,int H,double *scale,int *cx,int *cy)
+{
+	int avail_w;
+	int avail_h;
+	int cw;
+	int ch;
+	double s;
+
+	avail_w = (area->right - area->left) - 24;
+	avail_h = (area->bottom - area->top) - 24;
+	if ((avail_w <= 0) || (avail_h <= 0) || (W <= 0) || (H <= 0))
+	{
+		*scale = 1.0;
+		*cx = area->left;
+		*cy = area->top;
+		return;
+	}
+	s = (double)avail_w / (double)W;
+	if (((double)avail_h / (double)H) < s)
+	{
+		s = (double)avail_h / (double)H;
+	}
+	if (s > 1.0) s = 1.0;
+	cw = (int)(W * s);
+	ch = (int)(H * s);
+	if (cw < 1) cw = 1;
+	if (ch < 1) ch = 1;
+	*scale = s;
+	*cx = area->left + ((area->right - area->left) - cw) / 2;
+	*cy = area->top + ((area->bottom - area->top) - ch) / 2;
+}
+
+// Subclass of the owner-draw preview static. Static controls swallow mouse
+// messages, so we intercept them here instead of waiting for WM_COMMAND.
+// The old window proc is stashed in the control's GWLP_USERDATA, matching the
+// pattern already used by _viv_edit_key_edit_proc().
+static LRESULT CALLBACK _viv_merge_preview_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
+{
+	WNDPROC last_proc;
+	_viv_merge_state_t *st;
+	int mx;
+	int my;
+	int px;
+	int py;
+	int i;
+
+	last_proc = (WNDPROC)GetWindowLongPtr(hwnd,GWLP_USERDATA);
+	st = (_viv_merge_state_t *)GetWindowLongPtr(GetParent(hwnd),GWLP_USERDATA);
+
+	switch (msg)
+	{
+	case WM_LBUTTONDOWN:
+		if (st && (st->layout == 6) && st->view_valid && (st->count > 0))
+		{
+			mx = (int)(short)LOWORD(lParam);
+			my = (int)(short)HIWORD(lParam);
+			px = (int)((mx - st->view_cx) / st->view_scale);
+			py = (int)((my - st->view_cy) / st->view_scale);
+			for (i = st->count - 1;i >= 0;i--) // topmost first
+			{
+				if ((px >= st->item_x[i]) && (px < st->item_x[i] + st->wides[i]) &&
+					(py >= st->item_y[i]) && (py < st->item_y[i] + st->highs[i]))
+				{
+					st->drag_index = i;
+					st->drag_off_x = px - st->item_x[i];
+					st->drag_off_y = py - st->item_y[i];
+					st->selected = i;
+					st->drag_scale = st->view_scale;
+					st->drag_cx = st->view_cx;
+					st->drag_cy = st->view_cy;
+					SetCapture(hwnd);
+					SendMessage(GetDlgItem(GetParent(hwnd),IDC_MERGE_LIST),LB_SETCURSEL,i,0);
+					InvalidateRect(hwnd,0,FALSE);
+					return 0;
+				}
+			}
+		}
+		break;
+
+	case WM_MOUSEMOVE:
+		if (st && (st->drag_index >= 0))
+		{
+			wchar_t wbuf[STRING_SIZE];
+			int W2;
+			int H2;
+
+			mx = (int)(short)LOWORD(lParam);
+			my = (int)(short)HIWORD(lParam);
+			px = (int)((mx - st->drag_cx) / st->drag_scale) - st->drag_off_x;
+			py = (int)((my - st->drag_cy) / st->drag_scale) - st->drag_off_y;
+			if (px < st->pad) px = st->pad;
+			if (py < st->pad) py = st->pad;
+			st->free_x[st->drag_index] = px;
+			st->free_y[st->drag_index] = py;
+			st->item_x[st->drag_index] = px;
+			st->item_y[st->drag_index] = py;
+			st->free_touched = 1;
+			InvalidateRect(hwnd,0,FALSE);
+			if (_viv_merge_prepare(st,&W2,&H2))
+			{
+				string_printf(wbuf,"%d %s %d x %d",st->count,localization_get_string(LOCALIZATION_ID_MERGE_INFO),W2,H2);
+			}
+			else
+			{
+				string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_TOO_LARGE));
+			}
+			SetDlgItemTextW(GetParent(hwnd),IDC_MERGE_INFO,wbuf);
+			return 0;
+		}
+		break;
+
+	case WM_LBUTTONUP:
+		if (st && (st->drag_index >= 0))
+		{
+			st->drag_index = -1;
+			ReleaseCapture();
+			InvalidateRect(hwnd,0,FALSE);
+			return 0;
+		}
+		break;
+
+	case WM_SETCURSOR:
+		if (st && (st->layout == 6))
+		{
+			SetCursor(LoadCursor(0,IDC_SIZEALL));
+			return TRUE;
+		}
+		break;
+	}
+	return CallWindowProc(last_proc,hwnd,msg,wParam,lParam);
+}
+
+static int _viv_merge_export(_viv_merge_state_t *st,const wchar_t *out_path)
+{
 	int W;
 	int H;
 	void *bitmap;
@@ -16434,8 +16719,7 @@ static int _viv_merge_export(_viv_merge_state_t *st,const wchar_t *out_path)
 		return 0;
 	}
 
-	cols = _viv_merge_choose_cols(st,col_w,row_h,&W,&H);
-	if (cols <= 0)
+	if (!_viv_merge_prepare(st,&W,&H))
 	{
 		return 0;
 	}
@@ -16483,7 +16767,8 @@ static int _viv_merge_export(_viv_merge_state_t *st,const wchar_t *out_path)
 			{
 				continue;
 			}
-			_viv_merge_item_xy(st,cols,col_w,row_h,i,&x,&y);
+			x = st->item_x[i];
+			y = st->item_y[i];
 			os_GdipDrawImageRectI(graphics,image,x,y,w,h); // w/h = original pixels -> 1:1
 			os_GdipDisposeImage(image);
 		}
@@ -16520,8 +16805,6 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 	int dy;
 	int dw;
 	int dh;
-	int avail_w;
-	int avail_h;
 	int canvas_x;
 	int canvas_y;
 	int canvas_w;
@@ -16552,10 +16835,18 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 	{
 		return;
 	}
-	rc = *area;
+	// Normalise to the control's client coordinates. The owner-draw HDC, the
+	// mouse coordinates in the subclass and this rectangle must all agree.
+	rc.left = 0;
+	rc.top = 0;
+	rc.right = area->right - area->left;
+	rc.bottom = area->bottom - area->top;
+	if ((rc.right <= 0) || (rc.bottom <= 0))
+	{
+		return;
+	}
 	oldfont = (HFONT)SelectObject(hdc,(HFONT)GetStockObject(DEFAULT_GUI_FONT));
 
-	// neutral frame, so the canvas edges are always visible
 	hb = CreateSolidBrush(RGB(238,241,243));
 	FillRect(hdc,&rc,hb);
 	DeleteObject(hb);
@@ -16572,8 +16863,7 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 		return;
 	}
 
-	cols = _viv_merge_choose_cols(st,col_w,row_h,&W,&H);
-	if (cols <= 0)
+	if (!_viv_merge_prepare(st,&W,&H))
 	{
 		string_copy_utf8_string(hint,localization_get_string(LOCALIZATION_ID_MERGE_TOO_LARGE));
 		oldtext = SetTextColor(hdc,RGB(170,60,60));
@@ -16585,30 +16875,24 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 		return;
 	}
 
-	avail_w = (rc.right - rc.left) - 24;
-	avail_h = (rc.bottom - rc.top) - 24;
-	if ((avail_w <= 0) || (avail_h <= 0))
+	_viv_merge_view_map(&rc,W,H,&scale,&canvas_x,&canvas_y);
+	if (st->drag_index >= 0)
 	{
-		SelectObject(hdc,oldfont);
-		return;
+		// freeze the mapping while dragging, otherwise a growing canvas would
+		// rescale everything and the image would jump away from the cursor
+		scale = st->drag_scale;
+		canvas_x = st->drag_cx;
+		canvas_y = st->drag_cy;
 	}
-	scale = (double)avail_w / (double)W;
-	if (((double)avail_h / (double)H) < scale)
-	{
-		scale = (double)avail_h / (double)H;
-	}
-	if (scale > 1.0)
-	{
-		scale = 1.0;
-	}
+	st->view_scale = scale;
+	st->view_cx = canvas_x;
+	st->view_cy = canvas_y;
+	st->view_valid = 1;
 
 	canvas_w = (int)(W * scale);
 	canvas_h = (int)(H * scale);
 	if (canvas_w < 1) canvas_w = 1;
 	if (canvas_h < 1) canvas_h = 1;
-	canvas_x = rc.left + ((rc.right - rc.left) - canvas_w) / 2;
-	canvas_y = rc.top + ((rc.bottom - rc.top) - canvas_h) / 2;
-
 	fr.left = canvas_x;
 	fr.top = canvas_y;
 	fr.right = canvas_x + canvas_w;
@@ -16616,11 +16900,10 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 
 	canvas_bg = RGB(255,255,255);
 	if (st->bg == 1) canvas_bg = RGB(0,0,0);
-	if ((st->bg == 2) && (st->fmt == 1)) canvas_bg = RGB(255,255,255); // JPG falls back to white
+	if ((st->bg == 2) && (st->fmt == 1)) canvas_bg = RGB(255,255,255);
 
 	if ((st->bg == 2) && (st->fmt != 1))
 	{
-		// transparent: checkerboard, same meaning as the exported alpha
 		light = CreateSolidBrush(RGB(246,246,246));
 		dark = CreateSolidBrush(RGB(202,202,202));
 		for (cy = fr.top;cy < fr.bottom;cy += 8)
@@ -16647,8 +16930,6 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 	FrameRect(hdc,&fr,hb2);
 	DeleteObject(hb2);
 
-	// pass 1: real thumbnails via the system gdiplus.dll (HDC graphics).
-	// GDI+ gets the HDC first; all plain-GDI decoration happens after release.
 	graphics = 0;
 	if (os_GdipCreateFromHDC && os_GdipDrawImageRectI && os_GdipDeleteGraphics)
 	{
@@ -16658,7 +16939,7 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 		}
 		else
 		{
-			if (os_GdipSetInterpolationMode) os_GdipSetInterpolationMode(graphics,7); // HighQualityBicubic
+			if (os_GdipSetInterpolationMode) os_GdipSetInterpolationMode(graphics,7);
 			if (os_GdipSetPixelOffsetMode) os_GdipSetPixelOffsetMode(graphics,2);
 			if (os_GdipSetSmoothingMode) os_GdipSetSmoothingMode(graphics,2);
 		}
@@ -16666,7 +16947,8 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 
 	for (i = 0;i < st->count;i++)
 	{
-		_viv_merge_item_xy(st,cols,col_w,row_h,i,&x,&y);
+		x = st->item_x[i];
+		y = st->item_y[i];
 		w = st->wides[i];
 		h = st->highs[i];
 		dx = canvas_x + (int)(x * scale);
@@ -16698,38 +16980,58 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 		os_GdipDeleteGraphics(graphics);
 	}
 
-	// pass 2: cell outlines + order badges make up/down/left/right explicit.
+	// pass 2: outlines + order badges. In free mode the outline follows the
+	// image itself (that is the thing the user is dragging), in grid mode it
+	// marks the cell so the centering stays visible.
 	for (i = 0;i < st->count;i++)
 	{
 		int c;
 		int r;
 		int k;
 
-		c = i % cols;
-		r = i / cols;
-		cell_x = st->pad;
-		cell_y = st->pad;
-		for (k = 0;k < c;k++) cell_x += col_w[k] + st->gap;
-		for (k = 0;k < r;k++) cell_y += row_h[k] + st->gap;
-		cx = canvas_x + (int)(cell_x * scale);
-		cy = canvas_y + (int)(cell_y * scale);
-		dw = (int)(col_w[c] * scale);
-		dh = (int)(row_h[r] * scale);
+		if (st->layout == 6)
+		{
+			dx = canvas_x + (int)(st->item_x[i] * scale);
+			dy = canvas_y + (int)(st->item_y[i] * scale);
+			dw = (int)(st->wides[i] * scale);
+			dh = (int)(st->highs[i] * scale);
+		}
+		else
+		{
+			cols = _viv_merge_choose_cols(st,col_w,row_h,&W,&H);
+			if (cols <= 0) cols = 1;
+			c = i % cols;
+			r = i / cols;
+			cell_x = st->pad;
+			cell_y = st->pad;
+			for (k = 0;k < c;k++) cell_x += col_w[k] + st->gap;
+			for (k = 0;k < r;k++) cell_y += row_h[k] + st->gap;
+			dx = canvas_x + (int)(cell_x * scale);
+			dy = canvas_y + (int)(cell_y * scale);
+			dw = (int)(col_w[c] * scale);
+			dh = (int)(row_h[r] * scale);
+		}
 		if (dw < 1) dw = 1;
 		if (dh < 1) dh = 1;
-
-		tr.left = cx;
-		tr.top = cy;
-		tr.right = cx + dw;
-		tr.bottom = cy + dh;
-		hb = CreateSolidBrush(RGB(120,132,138));
+		tr.left = dx;
+		tr.top = dy;
+		tr.right = dx + dw;
+		tr.bottom = dy + dh;
+		hb = CreateSolidBrush((st->layout == 6 && i == st->selected) ? RGB(16,137,129) : RGB(120,132,138));
 		FrameRect(hdc,&tr,hb);
 		DeleteObject(hb);
+		if ((st->layout == 6) && (i == st->selected))
+		{
+			InflateRect(&tr,-1,-1);
+			hb = CreateSolidBrush(RGB(16,137,129));
+			FrameRect(hdc,&tr,hb);
+			DeleteObject(hb);
+		}
 
-		_viv_merge_item_xy(st,cols,col_w,row_h,i,&x,&y);
+		x = st->item_x[i];
+		y = st->item_y[i];
 		dx = canvas_x + (int)(x * scale);
 		dy = canvas_y + (int)(y * scale);
-
 		br.left = dx + 2;
 		br.top = dy + 2;
 		br.right = br.left + 18;
@@ -16794,15 +17096,13 @@ static void _viv_merge_list_refresh(HWND hwnd,_viv_merge_state_t *st)
 static void _viv_merge_info_refresh(HWND hwnd,_viv_merge_state_t *st)
 {
 	wchar_t wbuf[STRING_SIZE];
-	int col_w[VIV_MERGE_MAX_IMAGES];
-	int row_h[VIV_MERGE_MAX_IMAGES];
 	int W;
 	int H;
 	if (st->count <= 0)
 	{
 		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_INFO_EMPTY));
 	}
-	else if (_viv_merge_choose_cols(st,col_w,row_h,&W,&H) > 0)
+	else if (_viv_merge_prepare(st,&W,&H))
 	{
 		string_printf(wbuf,"%d %s %d x %d",st->count,localization_get_string(LOCALIZATION_ID_MERGE_INFO),W,H);
 	}
@@ -16829,6 +17129,8 @@ static void _viv_merge_read_params(HWND hwnd,_viv_merge_state_t *st)
 	if (i >= 0) st->bg = i;
 	i = (int)SendMessage(GetDlgItem(hwnd,IDC_MERGE_FMT),CB_GETCURSEL,0,0);
 	if (i >= 0) st->fmt = i;
+	// Keep re-packing the free layout until the user actually drags something.
+	if ((st->layout == 6) && (!st->free_touched)) st->free_ready = 0;
 }
 
 static void _viv_merge_pick_files(HWND parent,_viv_merge_state_t *st)
@@ -16901,12 +17203,21 @@ static void _viv_merge_move(HWND hwnd,_viv_merge_state_t *st,int delta)
 	tp = st->paths[sel];
 	tw = st->wides[sel];
 	th = st->highs[sel];
+	{
+		int tx = st->free_x[sel];
+		int ty = st->free_y[sel];
+		st->free_x[sel] = st->free_x[other];
+		st->free_y[sel] = st->free_y[other];
+		st->free_x[other] = tx;
+		st->free_y[other] = ty;
+	}
 	st->paths[sel] = st->paths[other];
 	st->wides[sel] = st->wides[other];
 	st->highs[sel] = st->highs[other];
 	st->paths[other] = tp;
 	st->wides[other] = tw;
 	st->highs[other] = th;
+	if (!st->free_touched) st->free_ready = 0;
 	_viv_merge_list_refresh(hwnd,st);
 	SendMessage(list,LB_SETCURSEL,other,0);
 	_viv_merge_info_refresh(hwnd,st);
@@ -16929,8 +17240,12 @@ static void _viv_merge_remove(HWND hwnd,_viv_merge_state_t *st)
 		st->paths[i] = st->paths[i + 1];
 		st->wides[i] = st->wides[i + 1];
 		st->highs[i] = st->highs[i + 1];
+		st->free_x[i] = st->free_x[i + 1];
+		st->free_y[i] = st->free_y[i + 1];
 	}
 	st->count--;
+	if (!st->free_touched) st->free_ready = 0;
+	if (st->selected >= st->count) st->selected = st->count - 1;
 	_viv_merge_list_refresh(hwnd,st);
 	_viv_merge_info_refresh(hwnd,st);
 }
@@ -17000,6 +17315,13 @@ static INT_PTR CALLBACK _viv_merge_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 
 	switch (msg)
 	{
+	case WM_DESTROY:
+	{
+		HWND preview = GetDlgItem(hwnd,IDC_MERGE_PREVIEW);
+		WNDPROC last_proc = (WNDPROC)GetWindowLongPtr(preview,GWLP_USERDATA);
+		if (last_proc) SetWindowLongPtr(preview,GWLP_WNDPROC,(LONG_PTR)last_proc);
+		return FALSE;
+	}
 	case WM_INITDIALOG:
 		st = (_viv_merge_state_t *)lParam;
 		SetWindowLongPtr(hwnd,GWLP_USERDATA,(LONG_PTR)st);
@@ -17014,6 +17336,8 @@ static INT_PTR CALLBACK _viv_merge_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 		SetDlgItemTextW(hwnd,IDC_MERGE_UP,wbuf);
 		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_DOWN));
 		SetDlgItemTextW(hwnd,IDC_MERGE_DOWN,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_COMPACT));
+		SetDlgItemTextW(hwnd,IDC_MERGE_COMPACT,wbuf);
 		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_LAYOUT));
 		SetDlgItemTextW(hwnd,IDC_MERGE_LAYOUT_LABEL,wbuf);
 		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_GAP));
@@ -17033,7 +17357,13 @@ static INT_PTR CALLBACK _viv_merge_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_PREVIEW_HINT));
 		SetDlgItemTextW(hwnd,IDC_MERGE_PREVIEW_HINT,wbuf);
 
-		_viv_merge_combo_init(hwnd,IDC_MERGE_LAYOUT,6,LOCALIZATION_ID_MERGE_LAYOUT_AUTO,st->layout);
+		_viv_merge_combo_init(hwnd,IDC_MERGE_LAYOUT,6,LOCALIZATION_ID_MERGE_LAYOUT_AUTO,0);
+		{
+			HWND combo = GetDlgItem(hwnd,IDC_MERGE_LAYOUT);
+			string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_LAYOUT_FREE));
+			SendMessage(combo,CB_ADDSTRING,0,(LPARAM)wbuf);
+			SendMessage(combo,CB_SETCURSEL,st->layout,0);
+		}
 		_viv_merge_combo_init(hwnd,IDC_MERGE_BG,3,LOCALIZATION_ID_MERGE_BG_WHITE,st->bg);
 		_viv_merge_combo_init(hwnd,IDC_MERGE_FMT,2,LOCALIZATION_ID_MERGE_FMT_PNG,st->fmt);
 		{
@@ -17055,6 +17385,11 @@ static INT_PTR CALLBACK _viv_merge_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 				SendMessage(combo,CB_ADDSTRING,0,(LPARAM)wbuf);
 			}
 			SendMessage(combo,CB_SETCURSEL,2,0); // 24
+		}
+		{
+			HWND preview = GetDlgItem(hwnd,IDC_MERGE_PREVIEW);
+			WNDPROC last_proc = (WNDPROC)SetWindowLongPtr(preview,GWLP_WNDPROC,(LONG_PTR)_viv_merge_preview_proc);
+			SetWindowLongPtr(preview,GWLP_USERDATA,(LONG_PTR)last_proc);
 		}
 		_viv_merge_list_refresh(hwnd,st);
 		_viv_merge_info_refresh(hwnd,st);
@@ -17095,6 +17430,13 @@ static INT_PTR CALLBACK _viv_merge_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 		case IDC_MERGE_DOWN:
 			_viv_merge_move(hwnd,st,1);
 			return TRUE;
+		case IDC_MERGE_COMPACT:
+			_viv_merge_read_params(hwnd,st);
+			st->layout = 6;
+			SendMessage(GetDlgItem(hwnd,IDC_MERGE_LAYOUT),CB_SETCURSEL,6,0);
+			_viv_merge_compact(st);
+			_viv_merge_info_refresh(hwnd,st);
+			return TRUE;
 		case IDC_MERGE_LAYOUT:
 		case IDC_MERGE_GAP:
 		case IDC_MERGE_PAD:
@@ -17116,7 +17458,9 @@ static void _viv_merge_images_dialog(void)
 {
 	_viv_merge_state_t st;
 	os_zero_memory(&st,sizeof(_viv_merge_state_t));
-	st.layout = 0;
+	st.layout = 6; // free layout: compact by default, draggable
+	st.drag_index = -1;
+	st.selected = -1;
 	st.gap = 16;
 	st.pad = 24;
 	st.bg = 0;

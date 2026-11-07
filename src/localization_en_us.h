@@ -350,5 +350,7 @@ static const utf8_t *_localization_string_array_en_us[LOCALIZATION_ID_COUNT] =
 	"Output is too large (over 30000 px per side). Use fewer images.", // LOCALIZATION_ID_MERGE_TOO_LARGE,
 	"Merge preview (matches the exported image):", // LOCALIZATION_ID_MERGE_PREVIEW_LABEL,
 	"Add 2 or more images to preview the result", // LOCALIZATION_ID_MERGE_PREVIEW_EMPTY,
-	"Numbers show the image order; use Up / Down to reorder. Layout, gap, padding and background refresh instantly.", // LOCALIZATION_ID_MERGE_PREVIEW_HINT,
+	"Numbers show the order. In Free layout drag any image to move it; higher numbers draw on top.", // LOCALIZATION_ID_MERGE_PREVIEW_HINT,
+	"Free layout (drag)", // LOCALIZATION_ID_MERGE_LAYOUT_FREE,
+	"&Compact Again", // LOCALIZATION_ID_MERGE_COMPACT,
 };
