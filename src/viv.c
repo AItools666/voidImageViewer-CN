@@ -16514,78 +16514,153 @@ static void _viv_merge_item_xy(_viv_merge_state_t *st,int cols,int *col_w,int *r
 // pixel size, so the merge stays lossless 1:1 (no resampling at all).
 // ---------------------------------------------------------------------------
 
-// Newton iteration, avoids pulling in math.h just for one sqrt().
-static double _viv_merge_sqrt(double v)
+// ---------------------------------------------------------------------------
+// v9: shape-aware layout, shared by the DEFAULT packing and the POST-DRAG
+// re-pack. Landscape/square images stack in ONE column, portrait images in
+// ANOTHER column right next to it. Dragging an image only decides which side
+// its own shape group goes on and whether it sits at the top or the bottom of
+// that group; every other image of the same shape automatically joins it.
+// No overlap, no ragged gaps, and the canvas no longer grows with the drop.
+// ---------------------------------------------------------------------------
+static void _viv_merge_group_layout(_viv_merge_state_t *st,int anchor,int ax,int ay)
 {
-	double x;
+	int group[VIV_MERGE_MAX_IMAGES];
+	int list0[VIV_MERGE_MAX_IMAGES];
+	int list1[VIV_MERGE_MAX_IMAGES];
+	int n0;
+	int n1;
+	int w0;
+	int w1;
+	int h0;
+	int h1;
 	int i;
-	if (v <= 1.0)
+	int j;
+	int k;
+	int t;
+	int left;
+	int ag;
+	int half_w;
+	int half_h;
+	int ref_w;
+	int ref_h;
+	int col_x;
+	int col_y;
+	int W;
+	int H;
+
+	n0 = 0;
+	n1 = 0;
+	for (i = 0;i < st->count;i++)
 	{
-		return 1.0;
+		group[i] = (st->highs[i] > st->wides[i]) ? 1 : 0; // 0=landscape/square 1=portrait
+		if (group[i]) list1[n1++] = i;
+		else list0[n0++] = i;
 	}
-	x = v;
-	for (i = 0;i < 32;i++)
+
+	ref_w = (st->frame_wide > 0) ? st->frame_wide : 1;
+	ref_h = (st->frame_high > 0) ? st->frame_high : 1;
+	half_w = ref_w / 2;
+	half_h = ref_h / 2;
+
+	// Landscape on the left, portrait on the right by default. Dropping an
+	// image in the right half puts ITS shape group on the right instead.
+	left = 0;
+	if ((anchor >= 0) && (anchor < st->count) && (n0 > 0) && (n1 > 0))
 	{
-		x = (x + v / x) * 0.5;
+		ag = group[anchor];
+		left = ((ax + st->wides[anchor] / 2) > half_w) ? (1 - ag) : ag;
 	}
-	return x;
+
+	// Inside its group the dragged image goes to the top (upper half) or the
+	// bottom (lower half); the others keep their relative order.
+	if ((anchor >= 0) && (anchor < st->count))
+	{
+		int *lst;
+		int n;
+		lst = group[anchor] ? list1 : list0;
+		n = group[anchor] ? n1 : n0;
+		for (j = 0;j < n;j++)
+		{
+			if (lst[j] == anchor) break;
+		}
+		if (j < n)
+		{
+			int target = (ay < half_h) ? 0 : n - 1;
+			t = lst[j];
+			if (j > target)
+			{
+				for (k = j;k > target;k--) lst[k] = lst[k - 1];
+			}
+			else
+			{
+				for (k = j;k < target;k++) lst[k] = lst[k + 1];
+			}
+			lst[target] = t;
+		}
+	}
+
+	w0 = 0;
+	h0 = 0;
+	for (j = 0;j < n0;j++)
+	{
+		i = list0[j];
+		if (st->wides[i] > w0) w0 = st->wides[i];
+		h0 += st->highs[i];
+	}
+	if (n0 > 1) h0 += st->gap * (n0 - 1);
+	w1 = 0;
+	h1 = 0;
+	for (j = 0;j < n1;j++)
+	{
+		i = list1[j];
+		if (st->wides[i] > w1) w1 = st->wides[i];
+		h1 += st->highs[i];
+	}
+	if (n1 > 1) h1 += st->gap * (n1 - 1);
+
+	H = ((h0 > h1) ? h0 : h1) + st->pad * 2;
+	W = st->pad * 2 + w0 + w1;
+	if ((n0 > 0) && (n1 > 0)) W += st->gap;
+
+	// Place the columns left -> right. A shorter column is centred vertically
+	// so one tall portrait sits neatly beside a stack of two landscapes.
+	{
+		int g;
+		int lw = left ? w1 : w0;
+		int ln = left ? n1 : n0;
+		int offset = 0;
+		if (ln <= 0) lw = 0;
+		for (g = 0;g < 2;g++)
+		{
+			int which = (g == 0) ? left : (1 - left);
+			int *lst = which ? list1 : list0;
+			int n = which ? n1 : n0;
+			int cw = which ? w1 : w0;
+			int ch = which ? h1 : h0;
+			if (n <= 0) continue;
+			col_x = st->pad + offset;
+			col_y = st->pad + (H - st->pad * 2 - ch) / 2;
+			for (j = 0;j < n;j++)
+			{
+				i = lst[j];
+				st->free_x[i] = col_x + (cw - st->wides[i]) / 2;
+				st->free_y[i] = col_y;
+				col_y += st->highs[i] + st->gap;
+			}
+			offset = lw + st->gap;
+		}
+	}
+
+	st->free_ready = 1;
+	st->free_touched = (anchor >= 0) ? 1 : 0;
+	st->anchored = (anchor >= 0) ? 1 : 0;
+	st->frame_wide = W;
+	st->frame_high = H;
 }
 
-// Compact shelf packing: images keep their own width/height and are packed
-// row by row. Unlike a grid there is no "widest image in the column" padding,
-// so a small image next to a large one no longer leaves a big empty cell.
 static void _viv_merge_compact(_viv_merge_state_t *st)
 {
-	__int64 total;
-	int i;
-	int max_w;
-	int target_w;
-	int x;
-	int y;
-	int row_h;
-	int w;
-	int h;
-
-	total = 0;
-	max_w = 1;
-	for (i = 0;i < st->count;i++)
-	{
-		total += (__int64)st->wides[i] * (__int64)st->highs[i];
-		if (st->wides[i] > max_w)
-		{
-			max_w = st->wides[i];
-		}
-	}
-	target_w = (int)_viv_merge_sqrt((double)total * 1.6); // aim at a 16:10 canvas
-	if (target_w < max_w) target_w = max_w;
-	if (target_w > 16000) target_w = 16000;
-
-	x = st->pad;
-	y = st->pad;
-	row_h = 0;
-	for (i = 0;i < st->count;i++)
-	{
-		w = st->wides[i];
-		h = st->highs[i];
-		if ((x > st->pad) && ((x + w) > (st->pad + target_w)))
-		{
-			x = st->pad;
-			y += row_h + st->gap;
-			row_h = 0;
-		}
-		st->free_x[i] = x;
-		st->free_y[i] = y;
-		x += w + st->gap;
-		if (h > row_h)
-		{
-			row_h = h;
-		}
-	}
-	st->free_ready = 1;
-	st->free_touched = 0;
-	st->anchored = 0;
-	st->frame_wide = 0;
-	st->frame_high = 0;
+	_viv_merge_group_layout(st,-1,0,0);
 }
 
 // ONE geometry entry point: fills st->item_x/item_y and returns canvas size.
@@ -16651,49 +16726,7 @@ static int _viv_merge_prepare(_viv_merge_state_t *st,int *out_wide,int *out_high
 	return 1;
 }
 
-// ---------------------------------------------------------------------------
-// v8: automatic re-pack. The image the user drops is the anchor; all the other
-// images are placed again with a bottom-left / best-fit search so they line up
-// by size inside the DEFAULT compact frame. Nothing overlaps, so no source
-// pixels are hidden in the exported bitmap and the canvas never runs away.
-// ---------------------------------------------------------------------------
-static int _viv_merge_hit(int ax,int ay,int aw,int ah,int bx,int by,int bw,int bh,int gap)
-{
-	return (ax < bx + bw + gap) && (bx < ax + aw + gap) &&
-	       (ay < by + bh + gap) && (by < ay + ah + gap);
-}
-
-// Sort + de-duplicate candidate coordinates, keep the leftmost/topmost ones.
-static int _viv_merge_cand(int *v,int n,int limit)
-{
-	int i;
-	int j;
-	int t;
-	int m;
-
-	for (i = 1;i < n;i++)
-	{
-		t = v[i];
-		j = i - 1;
-		while ((j >= 0) && (v[j] > t))
-		{
-			v[j + 1] = v[j];
-			j--;
-		}
-		v[j + 1] = t;
-	}
-	m = 0;
-	for (i = 0;i < n;i++)
-	{
-		if ((m == 0) || (v[i] != v[m - 1]))
-		{
-			v[m++] = v[i];
-			if (m >= limit) break;
-		}
-	}
-	return m;
-}
-
+// v9: keep the anchor inside the default frame while the pointer moves.
 static void _viv_merge_clamp_anchor(_viv_merge_state_t *st,int index,int *x,int *y)
 {
 	int right;
@@ -16712,177 +16745,18 @@ static void _viv_merge_clamp_anchor(_viv_merge_state_t *st,int index,int *x,int 
 	if (*y < st->pad) *y = st->pad;
 }
 
+// Dropping one image re-runs the shape-aware layout. The drop point is only
+// a hint (which side / top or bottom of its shape group), so the remaining
+// images line up by shape instead of staying frozen where they were.
 static void _viv_merge_reflow(_viv_merge_state_t *st,int anchor)
 {
-	int xs[VIV_MERGE_CAND_MAX];
-	int ys[VIV_MERGE_CAND_MAX];
-	int px[VIV_MERGE_MAX_IMAGES];
-	int py[VIV_MERGE_MAX_IMAGES];
-	int order[VIV_MERGE_MAX_IMAGES];
-	int nx;
-	int ny;
-	int np;
-	int n;
-	int i;
-	int j;
-	int k;
-	int p;
-	int idx;
-	int w;
-	int h;
-	int right;
-	int bottom;
-	int x;
-	int y;
-	int ok;
-	int align;
-	int found;
-	int cur_right;
-	int cur_bottom;
-	int nr;
-	int nb;
-	int nr_best;
-	int nb_best;
-	int max_w;
-	int over_w;
-	int over_h;
-	__int64 score;
-	__int64 best;
+	int ax;
+	int ay;
 
-	if (!st || (st->count <= 0) || (anchor < 0) || (anchor >= st->count)) return;
-	n = st->count;
-	if ((st->frame_wide <= 0) || (st->frame_high <= 0))
-	{
-		int W0;
-		int H0;
-		if (!_viv_merge_prepare(st,&W0,&H0)) return;
-		st->frame_wide = W0;
-		st->frame_high = H0;
-	}
-	right = st->frame_wide - st->pad;
-	bottom = st->frame_high - st->pad;
-	max_w = 1;
-	for (i = 0;i < n;i++)
-	{
-		if (st->wides[i] > max_w) max_w = st->wides[i];
-	}
-
-	x = st->free_x[anchor];
-	y = st->free_y[anchor];
-	_viv_merge_clamp_anchor(st,anchor,&x,&y);
-	px[0] = x;
-	py[0] = y;
-	cur_right = x + st->wides[anchor];
-	cur_bottom = y + st->highs[anchor];
-	order[0] = anchor;
-	np = 1;
-	for (i = 0;i < n;i++)
-	{
-		if (i != anchor) order[np++] = i;
-	}
-
-	for (idx = 1;idx < np;idx++)
-	{
-		i = order[idx];
-		w = st->wides[i];
-		h = st->highs[i];
-		nx = 0;
-		ny = 0;
-		xs[nx++] = st->pad;
-		ys[ny++] = st->pad;
-		for (j = 0;j < idx;j++)
-		{
-			int oi = order[j];
-			xs[nx++] = px[j] + st->wides[oi] + st->gap;
-			xs[nx++] = px[j]; // share a left edge -> tidy columns
-			ys[ny++] = py[j] + st->highs[oi] + st->gap;
-			ys[ny++] = py[j]; // share a top edge -> tidy rows
-		}
-		nx = _viv_merge_cand(xs,nx,VIV_MERGE_CAND_LIMIT);
-		ny = _viv_merge_cand(ys,ny,VIV_MERGE_CAND_LIMIT);
-
-		found = 0;
-		best = 0;
-		nr_best = cur_right;
-		nb_best = cur_bottom;
-		px[idx] = st->pad;
-		py[idx] = st->pad;
-		// Score = area of the bounding box AFTER this placement. That makes
-		// the packer fill holes and put images side by side instead of piling
-		// them into one tall, half-empty column. Growing beyond the default
-		// frame is allowed but penalised and capped at one extra image width.
-		for (j = 0;j < ny;j++)
-		{
-			y = ys[j];
-			if (y < st->pad) continue;
-			for (k = 0;k < nx;k++)
-			{
-				x = xs[k];
-				if (x < st->pad) continue;
-				if (x + w > right + max_w) continue;
-				ok = 1;
-				for (p = 0;p < idx;p++)
-				{
-					int oi = order[p];
-					if (_viv_merge_hit(x,y,w,h,px[p],py[p],
-						st->wides[oi],st->highs[oi],st->gap))
-					{
-						ok = 0;
-						break;
-					}
-				}
-				if (!ok) continue;
-				nr = (x + w > cur_right) ? x + w : cur_right;
-				nb = (y + h > cur_bottom) ? y + h : cur_bottom;
-				over_w = (x + w > right) ? (x + w - right) : 0;
-				over_h = (y + h > bottom) ? (y + h - bottom) : 0;
-				align = 0;
-				for (p = 0;p < idx;p++)
-				{
-					if (y == py[p]) align += 2;
-					if (x == px[p]) align += 1;
-				}
-				score = (__int64)nr * (__int64)nb * 64 + (__int64)y * 512 + (__int64)x
-					+ (__int64)(over_w + over_h) * 10000 - (__int64)align * 100;
-				if (!found || (score < best))
-				{
-					found = 1;
-					best = score;
-					px[idx] = x;
-					py[idx] = y;
-					nr_best = nr;
-					nb_best = nb;
-				}
-			}
-		}
-		if (!found)
-		{
-			y = st->pad;
-			for (p = 0;p < idx;p++)
-			{
-				int oi = order[p];
-				if (py[p] + st->highs[oi] + st->gap > y)
-				{
-					y = py[p] + st->highs[oi] + st->gap;
-				}
-			}
-			px[idx] = st->pad;
-			py[idx] = y;
-			nr_best = (st->pad + w > cur_right) ? st->pad + w : cur_right;
-			nb_best = (y + h > cur_bottom) ? y + h : cur_bottom;
-		}
-		cur_right = nr_best;
-		cur_bottom = nb_best;
-	}
-
-	for (j = 0;j < np;j++)
-	{
-		st->free_x[order[j]] = px[j];
-		st->free_y[order[j]] = py[j];
-	}
-	st->free_ready = 1;
-	st->free_touched = 1;
-	st->anchored = 1;
+	if (!st || (anchor < 0) || (anchor >= st->count)) return;
+	ax = st->free_x[anchor];
+	ay = st->free_y[anchor];
+	_viv_merge_group_layout(st,anchor,ax,ay);
 }
 
 // Shared preview mapping. Draw code and hit testing MUST use the same numbers.
@@ -16985,8 +16859,6 @@ static LRESULT CALLBACK _viv_merge_preview_proc(HWND hwnd,UINT msg,WPARAM wParam
 		{
 			int W2;
 			int H2;
-			DWORD now;
-
 			mx = (int)(short)LOWORD(lParam);
 			my = (int)(short)HIWORD(lParam);
 			px = (int)((mx - st->drag_cx) / st->drag_scale) - st->drag_off_x;
@@ -16995,15 +16867,9 @@ static LRESULT CALLBACK _viv_merge_preview_proc(HWND hwnd,UINT msg,WPARAM wParam
 			st->free_x[st->drag_index] = px;
 			st->free_y[st->drag_index] = py;
 			st->drag_moved = 1;
-			// Re-pack the OTHER images so the composition stays tidy while the
-			// pointer moves. Throttled to ~20 fps; the final pass runs on mouse-up.
-			now = GetTickCount();
-			if ((st->last_reflow_tick == 0) || ((now - st->last_reflow_tick) >= 50))
-			{
-				_viv_merge_reflow(st,st->drag_index);
-				st->last_reflow_tick = now;
-			}
-			_viv_merge_prepare(st,&W2,&H2); // keep item_x/y == free_x/y
+			// v9: only the dragged image follows the pointer; the shape-aware
+			// re-pack happens once, on mouse-up, so nothing else jitters.
+						_viv_merge_prepare(st,&W2,&H2); // keep item_x/y == free_x/y
 			InvalidateRect(hwnd,0,FALSE); // ONE buffered repaint per move
 			return 0;
 		}
