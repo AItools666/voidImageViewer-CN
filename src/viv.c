@@ -16736,8 +16736,16 @@ static void _viv_merge_reflow(_viv_merge_state_t *st,int anchor)
 	int y;
 	int ok;
 	int align;
-	int pass;
 	int found;
+	int cur_right;
+	int cur_bottom;
+	int nr;
+	int nb;
+	int nr_best;
+	int nb_best;
+	int max_w;
+	int over_w;
+	int over_h;
 	__int64 score;
 	__int64 best;
 
@@ -16753,12 +16761,19 @@ static void _viv_merge_reflow(_viv_merge_state_t *st,int anchor)
 	}
 	right = st->frame_wide - st->pad;
 	bottom = st->frame_high - st->pad;
+	max_w = 1;
+	for (i = 0;i < n;i++)
+	{
+		if (st->wides[i] > max_w) max_w = st->wides[i];
+	}
 
 	x = st->free_x[anchor];
 	y = st->free_y[anchor];
 	_viv_merge_clamp_anchor(st,anchor,&x,&y);
 	px[0] = x;
 	py[0] = y;
+	cur_right = x + st->wides[anchor];
+	cur_bottom = y + st->highs[anchor];
 	order[0] = anchor;
 	np = 1;
 	for (i = 0;i < n;i++)
@@ -16788,49 +16803,55 @@ static void _viv_merge_reflow(_viv_merge_state_t *st,int anchor)
 
 		found = 0;
 		best = 0;
+		nr_best = cur_right;
+		nb_best = cur_bottom;
 		px[idx] = st->pad;
 		py[idx] = st->pad;
-		// pass 0: strictly inside the default frame
-		// pass 1: allow the canvas to grow taller
-		// pass 2: allow it to grow wider (single image wider than the frame)
-		for (pass = 0;(pass < 3) && (!found);pass++)
+		// Score = area of the bounding box AFTER this placement. That makes
+		// the packer fill holes and put images side by side instead of piling
+		// them into one tall, half-empty column. Growing beyond the default
+		// frame is allowed but penalised and capped at one extra image width.
+		for (j = 0;j < ny;j++)
 		{
-			for (j = 0;j < ny;j++)
+			y = ys[j];
+			if (y < st->pad) continue;
+			for (k = 0;k < nx;k++)
 			{
-				y = ys[j];
-				if (y < st->pad) continue;
-				if ((pass < 1) && (y + h > bottom)) continue;
-				for (k = 0;k < nx;k++)
+				x = xs[k];
+				if (x < st->pad) continue;
+				if (x + w > right + max_w) continue;
+				ok = 1;
+				for (p = 0;p < idx;p++)
 				{
-					x = xs[k];
-					if (x < st->pad) continue;
-					if ((pass < 2) && (x + w > right)) continue;
-					ok = 1;
-					for (p = 0;p < idx;p++)
+					int oi = order[p];
+					if (_viv_merge_hit(x,y,w,h,px[p],py[p],
+						st->wides[oi],st->highs[oi],st->gap))
 					{
-						int oi = order[p];
-						if (_viv_merge_hit(x,y,w,h,px[p],py[p],
-							st->wides[oi],st->highs[oi],st->gap))
-						{
-							ok = 0;
-							break;
-						}
+						ok = 0;
+						break;
 					}
-					if (!ok) continue;
-					align = 0;
-					for (p = 0;p < idx;p++)
-					{
-						if (y == py[p]) align += 2;
-						if (x == px[p]) align += 1;
-					}
-					score = (__int64)y * 1000000 + (__int64)x * 10 - (__int64)align * 5000;
-					if (!found || (score < best))
-					{
-						found = 1;
-						best = score;
-						px[idx] = x;
-						py[idx] = y;
-					}
+				}
+				if (!ok) continue;
+				nr = (x + w > cur_right) ? x + w : cur_right;
+				nb = (y + h > cur_bottom) ? y + h : cur_bottom;
+				over_w = (x + w > right) ? (x + w - right) : 0;
+				over_h = (y + h > bottom) ? (y + h - bottom) : 0;
+				align = 0;
+				for (p = 0;p < idx;p++)
+				{
+					if (y == py[p]) align += 2;
+					if (x == px[p]) align += 1;
+				}
+				score = (__int64)nr * (__int64)nb * 64 + (__int64)y * 512 + (__int64)x
+					+ (__int64)(over_w + over_h) * 10000 - (__int64)align * 100;
+				if (!found || (score < best))
+				{
+					found = 1;
+					best = score;
+					px[idx] = x;
+					py[idx] = y;
+					nr_best = nr;
+					nb_best = nb;
 				}
 			}
 		}
@@ -16847,7 +16868,11 @@ static void _viv_merge_reflow(_viv_merge_state_t *st,int anchor)
 			}
 			px[idx] = st->pad;
 			py[idx] = y;
+			nr_best = (st->pad + w > cur_right) ? st->pad + w : cur_right;
+			nb_best = (y + h > cur_bottom) ? y + h : cur_bottom;
 		}
+		cur_right = nr_best;
+		cur_bottom = nb_best;
 	}
 
 	for (j = 0;j < np;j++)
