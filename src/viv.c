@@ -16602,10 +16602,11 @@ static void _viv_merge_view_map(RECT *area,int W,int H,double *scale,int *cx,int
 	*cy = area->top + ((area->bottom - area->top) - ch) / 2;
 }
 
-// Subclass of the owner-draw preview static. Static controls swallow mouse
-// messages, so we intercept them here instead of waiting for WM_COMMAND.
-// The old window proc is stashed in the control's GWLP_USERDATA, matching the
-// pattern already used by _viv_edit_key_edit_proc().
+// Subclass of the owner-draw preview static. A Static control is hit-test
+// transparent unless SS_NOTIFY is set (the resource template now sets it),
+// otherwise real mouse input goes to the DIALOG instead of this proc. The old
+// window proc is stashed in the control's GWLP_USERDATA, matching the pattern
+// already used by _viv_edit_key_edit_proc().
 static LRESULT CALLBACK _viv_merge_preview_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 {
 	WNDPROC last_proc;
@@ -17315,6 +17316,35 @@ static INT_PTR CALLBACK _viv_merge_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 
 	switch (msg)
 	{
+	// A Static control without SS_NOTIFY is hit-test transparent, so real mouse
+	// input lands on the dialog rather than on the preview subclass. The template
+	// now sets SS_NOTIFY; forward any stray messages anyway so dragging survives
+	// a future template change or a theme that eats the notification flag.
+	case WM_LBUTTONDOWN:
+	case WM_MOUSEMOVE:
+	case WM_LBUTTONUP:
+	{
+		HWND preview;
+		RECT rc;
+		POINT pt;
+		POINT screen;
+
+		if (!st || (st->layout != 6)) break;
+		preview = GetDlgItem(hwnd,IDC_MERGE_PREVIEW);
+		if (!preview || !GetWindowRect(preview,&rc)) break;
+		pt.x = (int)(short)LOWORD(lParam);
+		pt.y = (int)(short)HIWORD(lParam);
+		screen = pt;
+		ClientToScreen(hwnd,&screen);
+		if ((screen.x >= rc.left) && (screen.x < rc.right) &&
+			(screen.y >= rc.top) && (screen.y < rc.bottom))
+		{
+			MapWindowPoints(hwnd,preview,&pt,1);
+			return _viv_merge_preview_proc(preview,msg,wParam,MAKELPARAM(pt.x,pt.y));
+		}
+		break;
+	}
+
 	case WM_DESTROY:
 	{
 		HWND preview = GetDlgItem(hwnd,IDC_MERGE_PREVIEW);
