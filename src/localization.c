@@ -71,3 +71,25 @@ void localization_init(void)
 		}
 	}
 }
+
+// fork: apply language override saved in settings
+// 0 = keep auto detected language, 1 = english, 2 = simplified chinese
+void localization_apply_language_setting(BYTE language)
+{
+	switch(language)
+	{
+		case 1:
+			localization_language = LOCALIZATION_LANGUAGE_ENGLISH;
+			break;
+
+		case 2:
+			localization_language = LOCALIZATION_LANGUAGE_CHINESE_SIMPLIFIED;
+			break;
+	}
+}
+
+// fork: get current language id
+BYTE localization_get_language(void)
+{
+	return localization_language;
+}

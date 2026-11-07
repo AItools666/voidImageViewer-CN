@@ -120,6 +120,10 @@ extern BYTE config_pixel_info;
 extern BYTE config_orientation;
 extern BYTE config_title_bar_format;
 extern int config_add_command_line_timeout;
+// fork: 0=auto detect,1=english,2=simplified chinese
+extern BYTE config_language;
+// fork: full path of AI Visual Workbench executable
+extern wchar_t config_ai_workbench_path[1024];
 
 #ifdef __cplusplus
 }

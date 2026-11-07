@@ -295,4 +295,15 @@ static const utf8_t *_localization_string_array_zh_cn[LOCALIZATION_ID_COUNT] =
 	"TIFF Image",
 	"TIFF Image",
 	"WebP Image",
+
+	// AI Visual Workbench integration (fork)
+	"发送到 AI视觉工作台(&K)", // LOCALIZATION_ID_SEND_AI_WORKBENCH,
+	"启动 AI视觉工作台失败。", // LOCALIZATION_ID_SEND_AI_WORKBENCH_FAILED,
+	"选择 AI视觉工作台主程序", // LOCALIZATION_ID_PICK_AI_WORKBENCH_EXE_TITLE,
+
+	// Language (fork)
+	"语言(&L)", // LOCALIZATION_ID_LANGUAGE_MENU,
+	"英语(&E)", // LOCALIZATION_ID_LANGUAGE_ENGLISH,
+	"简体中文(&C)", // LOCALIZATION_ID_LANGUAGE_CHINESE,
+	"语言已保存，重启 void Image Viewer 后完全生效。", // LOCALIZATION_ID_LANGUAGE_RESTART_NOTICE,
 };

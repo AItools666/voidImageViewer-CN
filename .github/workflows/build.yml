@@ -1,0 +1,37 @@
+name: Build voidImageViewer CN
+
+on:
+  push:
+    branches: [ main, cn ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2019
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build x64 Release
+        run: msbuild vs2019\voidImageViewer.sln /p:Configuration=Release /p:Platform=x64 /m /nologo /v:m
+
+      - name: Build Win32 Release
+        run: msbuild vs2019\voidImageViewer.sln /p:Configuration=Release /p:Platform=Win32 /m /nologo /v:m
+
+      - name: Collect artifacts
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item "vs2019\x64\Release\voidImageViewer.exe" out\voidImageViewer-CN-x64.exe
+          Copy-Item "vs2019\Win32\Release\voidImageViewer.exe" out\voidImageViewer-CN-Win32.exe
+          Get-FileHash out\*.exe -Algorithm SHA256 | Format-List
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: voidImageViewer-CN
+          path: out/*.exe
+          if-no-files-found: error

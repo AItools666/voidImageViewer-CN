@@ -318,10 +318,27 @@ enum
 	LOCALIZATION_ID_ASSOCIATION_DESCRIPTION_TIFF,
 	LOCALIZATION_ID_ASSOCIATION_DESCRIPTION_WEBP,
 
+	// AI Visual Workbench integration (fork)
+	LOCALIZATION_ID_SEND_AI_WORKBENCH,
+	LOCALIZATION_ID_SEND_AI_WORKBENCH_FAILED,
+	LOCALIZATION_ID_PICK_AI_WORKBENCH_EXE_TITLE,
+
+	// Language (fork)
+	LOCALIZATION_ID_LANGUAGE_MENU,
+	LOCALIZATION_ID_LANGUAGE_ENGLISH,
+	LOCALIZATION_ID_LANGUAGE_CHINESE,
+	LOCALIZATION_ID_LANGUAGE_RESTART_NOTICE,
+
 	LOCALIZATION_ID_COUNT,
 };
 
 extern BYTE localization_language;
+
+// fork: apply language override saved in settings (0=auto detect,1=english,2=simplified chinese)
+void localization_apply_language_setting(BYTE language);
+
+// fork: get current language id
+BYTE localization_get_language(void);
 
 #ifdef __cplusplus
 }

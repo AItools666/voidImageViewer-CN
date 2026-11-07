@@ -331,6 +331,7 @@ enum
 	_VIV_MENU_NAVIGATE_SORT,
 	_VIV_MENU_NAVIGATE_PLAYLIST,
 	_VIV_MENU_HELP,
+	_VIV_MENU_LANGUAGE,
 	_VIV_MENU_COUNT,
 };
 
@@ -484,6 +485,8 @@ static void _viv_increase_rate(int dec);
 static void _viv_file_preview(void);
 static void _viv_file_print(void);
 static void _viv_file_set_desktop_wallpaper(void);
+static void _viv_file_send_ai_workbench(void); // fork
+static void _viv_set_language(int language); // fork
 static void _viv_edit_rotate(int counterclockwise);
 static void _viv_file_edit(void);
 static void _viv_open_file_location(void);
@@ -818,6 +821,7 @@ static _viv_command_t _viv_commands[] =
 	{LOCALIZATION_ID_DELETE_PERMANENTLY,MF_STRING|MF_OWNERDRAW,_VIV_MENU_FILE,VIV_ID_FILE_DELETE_PERMANENTLY},
 	{LOCALIZATION_ID_RENAME,MF_STRING,_VIV_MENU_FILE,VIV_ID_FILE_RENAME},
 	{LOCALIZATION_ID_PROPERTIES,MF_STRING,_VIV_MENU_FILE,VIV_ID_FILE_PROPERTIES},
+	{LOCALIZATION_ID_SEND_AI_WORKBENCH,MF_STRING|MF_OWNERDRAW,_VIV_MENU_FILE,VIV_ID_FILE_SEND_AI_WORKBENCH}, // fork
 	{LOCALIZATION_ID_INVALID,MF_SEPARATOR,_VIV_MENU_FILE,0},
 	{LOCALIZATION_ID_EXIT,MF_STRING,_VIV_MENU_FILE,VIV_ID_FILE_EXIT},
 	
@@ -963,6 +967,10 @@ static _viv_command_t _viv_commands[] =
 	{LOCALIZATION_ID_DONATE,MF_STRING,_VIV_MENU_HELP,VIV_ID_HELP_DONATE},
 	{LOCALIZATION_ID_INVALID,MF_SEPARATOR,_VIV_MENU_HELP,0},
 	{LOCALIZATION_ID_ABOUT,MF_STRING,_VIV_MENU_HELP,VIV_ID_HELP_ABOUT},
+	{LOCALIZATION_ID_INVALID,MF_SEPARATOR,_VIV_MENU_HELP,0},
+	{LOCALIZATION_ID_LANGUAGE_MENU,MF_POPUP,_VIV_MENU_HELP,_VIV_MENU_LANGUAGE},
+	{LOCALIZATION_ID_LANGUAGE_ENGLISH,MF_STRING,_VIV_MENU_LANGUAGE,VIV_ID_HELP_LANGUAGE_ENGLISH},
+	{LOCALIZATION_ID_LANGUAGE_CHINESE,MF_STRING,_VIV_MENU_LANGUAGE,VIV_ID_HELP_LANGUAGE_CHINESE},
 };
 
 #define _VIV_COMMAND_COUNT	(sizeof(_viv_commands) / sizeof(_viv_command_t))
@@ -1117,6 +1125,7 @@ WORD _viv_context_menu_items[] =
 	VIV_ID_FILE_RENAME,
 	0,
 	VIV_ID_FILE_PROPERTIES,
+	VIV_ID_FILE_SEND_AI_WORKBENCH, // fork
 	VIV_ID_VIEW_OPTIONS,
 	0,
 	VIV_ID_FILE_EXIT,
@@ -2485,6 +2494,18 @@ debug_printf("SWP %d %d %d %d\n",rect.left,rect.top,rect.right - rect.left,rect.
 
 		case VIV_ID_FILE_SET_DESKTOP_WALLPAPER:
 			_viv_file_set_desktop_wallpaper();
+			break;
+
+		case VIV_ID_FILE_SEND_AI_WORKBENCH:
+			_viv_file_send_ai_workbench();
+			break;
+
+		case VIV_ID_HELP_LANGUAGE_ENGLISH:
+			_viv_set_language(1);
+			break;
+
+		case VIV_ID_HELP_LANGUAGE_CHINESE:
+			_viv_set_language(2);
 			break;
 			
 		case VIV_ID_EDIT_ROTATE_270:
@@ -5260,6 +5281,9 @@ static int _viv_init(int nCmdShow)
 
 	// load settings
 	config_load_settings();
+
+	// fork: apply saved language override (0=auto detect,1=english,2=simplified chinese)
+	localization_apply_language_setting(config_language);
 	
 	// config_maximized will be overwritten when we show are normal window
 	// so save it now and apply it later.
@@ -7076,7 +7100,11 @@ static void _viv_check_menus(HMENU hmenu)
 	int rh;
 	int slideshow_rate_id;
 	UINT is_image_enabled;
-	
+
+	// fork: language radio checks
+	CheckMenuItem(hmenu,VIV_ID_HELP_LANGUAGE_ENGLISH,(localization_get_language() == LOCALIZATION_LANGUAGE_ENGLISH) ? (MF_CHECKED|MFT_RADIOCHECK) : (MF_UNCHECKED|MFT_RADIOCHECK));
+	CheckMenuItem(hmenu,VIV_ID_HELP_LANGUAGE_CHINESE,(localization_get_language() == LOCALIZATION_LANGUAGE_CHINESE_SIMPLIFIED) ? (MF_CHECKED|MFT_RADIOCHECK) : (MF_UNCHECKED|MFT_RADIOCHECK));
+
 	is_slideshow = 0;
 
 	if (_viv_is_fullscreen)
@@ -7710,6 +7738,92 @@ static void _viv_file_set_desktop_wallpaper(void)
 			os_shell_execute(_viv_hwnd,_viv_current_fd->cFileName,0,"setdesktopwallpaper",0);
 		}
 	}
+}
+
+// fork: send the current image to AI Visual Workbench
+static void _viv_file_send_ai_workbench(void)
+{
+	wchar_t cwd[STRING_SIZE];
+	wchar_t full_path_and_filename[STRING_SIZE];
+	wchar_t title_wbuf[STRING_SIZE];
+	wchar_t text_wbuf[STRING_SIZE];
+	wchar_t caption_wbuf[STRING_SIZE];
+	wchar_t filter_wbuf[STRING_SIZE];
+	OPENFILENAME ofn;
+	HINSTANCE ret;
+
+	if (!(*_viv_current_fd->cFileName))
+	{
+		return;
+	}
+
+	// pick the AI Visual Workbench executable when not configured.
+	if (!config_ai_workbench_path[0])
+	{
+		wchar_t tobuf[STRING_SIZE+1];
+
+		os_zero_memory(&ofn,sizeof(OPENFILENAME));
+
+		string_copy(tobuf,L"");
+
+		string_printf(filter_wbuf,"%s%c*.exe%c%s%c*.*%c",localization_get_string(LOCALIZATION_ID_PICK_AI_WORKBENCH_EXE_TITLE),0,0,localization_get_string(LOCALIZATION_ID_OPEN_ALL_FILES),0,0);
+
+		string_copy_utf8_string(title_wbuf,localization_get_string(LOCALIZATION_ID_PICK_AI_WORKBENCH_EXE_TITLE));
+
+		ofn.lStructSize = sizeof(OPENFILENAME);
+		ofn.hwndOwner = _viv_hwnd;
+		ofn.hInstance = os_hinstance;
+		ofn.lpstrFilter = filter_wbuf;
+		ofn.nFilterIndex = 1;
+		ofn.lpstrFile = tobuf;
+		ofn.nMaxFile = STRING_SIZE;
+		ofn.lpstrTitle = title_wbuf;
+		ofn.Flags = OFN_ENABLESIZING | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+
+		if (GetOpenFileName(&ofn))
+		{
+			string_copy(config_ai_workbench_path,tobuf);
+
+			config_save_settings(config_appdata);
+		}
+		else
+		{
+			return;
+		}
+	}
+
+	// the image folder is the current working directory.
+	GetCurrentDirectoryW(STRING_SIZE,cwd);
+
+	string_path_combine_utf8(full_path_and_filename,cwd,_viv_current_fd->cFileName);
+
+	ret = ShellExecuteW(_viv_hwnd,L"open",config_ai_workbench_path,full_path_and_filename,NULL,SW_SHOWNORMAL);
+
+	if ((INT_PTR)ret <= 32)
+	{
+		string_copy_utf8_string(text_wbuf,localization_get_string(LOCALIZATION_ID_SEND_AI_WORKBENCH_FAILED));
+		string_copy_utf8_string(caption_wbuf,localization_get_string(LOCALIZATION_ID_APP_NAME));
+
+		MessageBox(_viv_hwnd,text_wbuf,caption_wbuf,MB_OK|MB_ICONERROR);
+	}
+}
+
+// fork: save the language override (0=auto detect,1=english,2=simplified chinese)
+static void _viv_set_language(int language)
+{
+	wchar_t text_wbuf[STRING_SIZE];
+	wchar_t caption_wbuf[STRING_SIZE];
+
+	config_language = (BYTE)language;
+
+	localization_apply_language_setting((BYTE)language);
+
+	config_save_settings(config_appdata);
+
+	string_copy_utf8_string(text_wbuf,localization_get_string(LOCALIZATION_ID_LANGUAGE_RESTART_NOTICE));
+	string_copy_utf8_string(caption_wbuf,localization_get_string(LOCALIZATION_ID_APP_NAME));
+
+	MessageBox(_viv_hwnd,text_wbuf,caption_wbuf,MB_OK|MB_ICONINFORMATION);
 }
 
 static void _viv_edit_rotate(int counterclockwise)
