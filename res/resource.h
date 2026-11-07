@@ -91,6 +91,25 @@
 #define IDC_SHRINK_BLIT_MODE_STATIC		1053
 #define IDC_MAGNIFY_BLIT_MODE_STATIC		1054
 
+// fork: image merge dialog
+#define IDD_MERGE                       130
+#define IDC_MERGE_LIST                  1100
+#define IDC_MERGE_ADD                   1101
+#define IDC_MERGE_REMOVE                1102
+#define IDC_MERGE_UP                    1103
+#define IDC_MERGE_DOWN                  1104
+#define IDC_MERGE_LAYOUT                1105
+#define IDC_MERGE_GAP                   1106
+#define IDC_MERGE_PAD                   1107
+#define IDC_MERGE_BG                    1108
+#define IDC_MERGE_FMT                   1109
+#define IDC_MERGE_INFO                  1110
+#define IDC_MERGE_LAYOUT_LABEL          1111
+#define IDC_MERGE_GAP_LABEL             1112
+#define IDC_MERGE_PAD_LABEL             1113
+#define IDC_MERGE_BG_LABEL              1114
+#define IDC_MERGE_FMT_LABEL             1115
+
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED

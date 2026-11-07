@@ -120,6 +120,10 @@ extern int (__stdcall *os_GdipSetPixelOffsetMode)(void* graphics,int pixelOffset
 extern int (__stdcall *os_GdipSetSmoothingMode)(void *graphics, int smoothingMode);
 extern int (__stdcall *os_GdipDrawImageRectI)(void *graphics, void *image, INT x, INT y,INT width, INT height);
 extern int (__stdcall *os_GdipDeleteGraphics)(void *graphics);
+extern int (__stdcall *os_GdipCreateBitmapFromScan0)(INT wide,INT high,INT stride,int format,BYTE *scan0,void **bitmap);
+extern int (__stdcall *os_GdipGetImageGraphicsContext)(void *image,void **graphics);
+extern int (__stdcall *os_GdipGraphicsClear)(void *graphics,DWORD color);
+extern int (__stdcall *os_GdipSaveImageToFile)(void *image,const wchar_t *filename,const GUID *clsid,void *params);
 extern BOOL (WINAPI *os_CreateTimerQueueTimer)(PHANDLE phNewTimer,HANDLE TimerQueue,WAITORTIMERCALLBACK Callback,PVOID Parameter,DWORD DueTime,DWORD Period,ULONG Flags);
 extern BOOL (WINAPI *os_DeleteTimerQueueTimer)(HANDLE TimerQueue,HANDLE Timer,HANDLE CompletionEvent);
 extern BOOL (WINAPI *os_GetFileAttributesExW)(LPCWSTR lpFileName,GET_FILEEX_INFO_LEVELS fInfoLevelId,LPVOID lpFileInformation);

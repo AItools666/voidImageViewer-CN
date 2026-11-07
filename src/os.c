@@ -142,6 +142,10 @@ int (__stdcall *os_GdipSetPixelOffsetMode)(void* graphics,int pixelOffsetMode) =
 int (__stdcall *os_GdipSetSmoothingMode)(void *graphics, int smoothingMode) = 0;
 int (__stdcall *os_GdipDrawImageRectI)(void *graphics, void *image, INT x, INT y,INT width, INT height) = 0;
 int (__stdcall *os_GdipDeleteGraphics)(void *graphics) = 0;
+int (__stdcall *os_GdipCreateBitmapFromScan0)(INT wide,INT high,INT stride,int format,BYTE *scan0,void **bitmap) = 0;
+int (__stdcall *os_GdipGetImageGraphicsContext)(void *image,void **graphics) = 0;
+int (__stdcall *os_GdipGraphicsClear)(void *graphics,DWORD color) = 0;
+int (__stdcall *os_GdipSaveImageToFile)(void *image,const wchar_t *filename,const GUID *clsid,void *params) = 0;
 BOOL (STDAPICALLTYPE *os_IsUserAnAdmin)(void) = 0;
 HRESULT (__stdcall *os_EnableThemeDialogTexture)(HWND hwnd, DWORD dwFlags) = 0;
 static unsigned int (__cdecl *_os_controlfp)(unsigned int _NewValue,unsigned int _Mask) = 0;
@@ -915,6 +919,10 @@ void os_init(void)
 		os_GdipSetSmoothingMode = (void *)_os_get_proc_address(_os_gdiplus_hmodule,"GdipSetSmoothingMode");
 		os_GdipDrawImageRectI = (void *)_os_get_proc_address(_os_gdiplus_hmodule,"GdipDrawImageRectI");
 		os_GdipDeleteGraphics = (void *)_os_get_proc_address(_os_gdiplus_hmodule,"GdipDeleteGraphics");
+		os_GdipCreateBitmapFromScan0 = (void *)_os_get_proc_address(_os_gdiplus_hmodule,"GdipCreateBitmapFromScan0");
+		os_GdipGetImageGraphicsContext = (void *)_os_get_proc_address(_os_gdiplus_hmodule,"GdipGetImageGraphicsContext");
+		os_GdipGraphicsClear = (void *)_os_get_proc_address(_os_gdiplus_hmodule,"GdipGraphicsClear");
+		os_GdipSaveImageToFile = (void *)_os_get_proc_address(_os_gdiplus_hmodule,"GdipSaveImageToFile");
 	}
 }
 

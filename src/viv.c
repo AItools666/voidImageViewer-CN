@@ -625,6 +625,8 @@ static void _viv_uninstall_start_menu_shortcuts(void);
 static void _viv_append_admin_param(wchar_t *wbuf,const utf8_t *param);
 static void _viv_install_copy_file(const wchar_t *install_path,const wchar_t *temp_path,const utf8_t *filename,int critical);
 static INT_PTR CALLBACK _viv_rename_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam);
+static INT_PTR CALLBACK _viv_merge_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam); // fork
+static void _viv_merge_images_dialog(void); // fork
 static void _viv_shuffle_playlist(void);
 static void _viv_show_jumpto(void);
 static LRESULT CALLBACK _viv_jumpto_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam);
@@ -857,6 +859,7 @@ static _viv_command_t _viv_commands[] =
 	{LOCALIZATION_ID_PROPERTIES,MF_STRING,_VIV_MENU_FILE,VIV_ID_FILE_PROPERTIES},
 	{LOCALIZATION_ID_SEND_AI_WORKBENCH,MF_STRING|MF_OWNERDRAW,_VIV_MENU_FILE,VIV_ID_FILE_SEND_AI_WORKBENCH}, // fork
 	{LOCALIZATION_ID_FILE_ASSOCIATE_ALL,MF_STRING,_VIV_MENU_FILE,VIV_ID_FILE_ASSOCIATE_ALL}, // fork
+	{LOCALIZATION_ID_FILE_MERGE_IMAGES,MF_STRING,_VIV_MENU_FILE,VIV_ID_FILE_MERGE_IMAGES}, // fork
 	{LOCALIZATION_ID_INVALID,MF_SEPARATOR,_VIV_MENU_FILE,0},
 	{LOCALIZATION_ID_EXIT,MF_STRING,_VIV_MENU_FILE,VIV_ID_FILE_EXIT},
 	
@@ -1167,6 +1170,7 @@ WORD _viv_context_menu_items[] =
 	VIV_ID_FILE_PROPERTIES,
 	VIV_ID_FILE_SEND_AI_WORKBENCH, // fork
 	VIV_ID_FILE_ASSOCIATE_ALL, // fork
+	VIV_ID_FILE_MERGE_IMAGES, // fork
 	VIV_ID_VIEW_OPTIONS,
 	0,
 	VIV_ID_FILE_EXIT,
@@ -2539,6 +2543,10 @@ debug_printf("SWP %d %d %d %d\n",rect.left,rect.top,rect.right - rect.left,rect.
 
 		case VIV_ID_FILE_SEND_AI_WORKBENCH:
 			_viv_file_send_ai_workbench();
+			break;
+
+		case VIV_ID_FILE_MERGE_IMAGES:
+			_viv_merge_images_dialog();
 			break;
 
 		case VIV_ID_HELP_LANGUAGE_ENGLISH:
@@ -16038,4 +16046,801 @@ static int _viv_safe_copy_data(const void *base,SIZE_T src_size,const void *src,
 	}
 	
 	return 1;
+}
+
+// ============================================================================
+// fork: image merge (2026-11-07)
+//
+// Mirrors the "AI friendly contact sheet" from AI Visual Workbench:
+//   * any number of source images, any dimensions
+//   * each source is drawn at its ORIGINAL pixel size (1:1, no resampling)
+//   * row-major grid; column width / row height = max image in that column/row
+//   * layouts: auto (least waste + closest to 16:9), single row, single column,
+//     2/3/4 columns; gap, padding, white/black/transparent background
+//   * export PNG (lossless) or JPG (JPG forces a white background)
+//
+// Uses the system gdiplus.dll that os.c already loads dynamically. No extra
+// library is linked, so the exe only grows by this code + a dialog template.
+// ============================================================================
+
+#define VIV_MERGE_MAX_IMAGES 64
+#define VIV_MERGE_MAX_DIM 30000
+#define VIV_MERGE_PIXEL_FORMAT_32ARGB 0x26200A
+#define VIV_MERGE_INTERPOLATION_NEARESTNEIGHBOR 5
+
+static const GUID _viv_merge_clsid_png = {0x557cf406,0x1a04,0x11d3,{0x9a,0x73,0x00,0x00,0xf8,0x1e,0xf3,0x2e}};
+static const GUID _viv_merge_clsid_jpg = {0x557cf401,0x1a04,0x11d3,{0x9a,0x73,0x00,0x00,0xf8,0x1e,0xf3,0x2e}};
+
+typedef struct _viv_merge_state_s
+{
+	wchar_t *paths[VIV_MERGE_MAX_IMAGES];
+	int wides[VIV_MERGE_MAX_IMAGES];
+	int highs[VIV_MERGE_MAX_IMAGES];
+	int count;
+	int layout; // 0=auto 1=single row 2=single column 3=2 cols 4=3 cols 5=4 cols
+	int gap;
+	int pad;
+	int bg;  // 0=white 1=black 2=transparent
+	int fmt; // 0=png 1=jpg
+	int out_wide;
+	int out_high;
+}_viv_merge_state_t;
+
+// Load one image through the existing GDI+ stream path. Caller owns *out_image.
+static int _viv_merge_load_image(const wchar_t *path,void **out_image,int *out_wide,int *out_high)
+{
+	HANDLE h;
+	DWORD size;
+	DWORD remaining;
+	DWORD numread;
+	HGLOBAL hg;
+	char *buf;
+	char *d;
+	IStream *stream;
+	void *image;
+	UINT w;
+	UINT hh;
+
+	*out_image = 0;
+	*out_wide = 0;
+	*out_high = 0;
+
+	if (!os_GdipLoadImageFromStream || !os_GdipGetImageWidth || !os_GdipGetImageHeight || !os_GdipDisposeImage)
+	{
+		return 0;
+	}
+
+	h = CreateFile(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,0,OPEN_EXISTING,FILE_FLAG_SEQUENTIAL_SCAN,0);
+	if (h == INVALID_HANDLE_VALUE)
+	{
+		return 0;
+	}
+
+	size = GetFileSize(h,0);
+	if ((!size) || (size == INVALID_FILE_SIZE))
+	{
+		CloseHandle(h);
+		return 0;
+	}
+
+	hg = GlobalAlloc(GMEM_MOVEABLE,size);
+	if (!hg)
+	{
+		CloseHandle(h);
+		return 0;
+	}
+
+	buf = (char *)GlobalLock(hg);
+	if (!buf)
+	{
+		GlobalFree(hg);
+		CloseHandle(h);
+		return 0;
+	}
+
+	d = buf;
+	remaining = size;
+	while (remaining)
+	{
+		if (!ReadFile(h,d,remaining,&numread,0) || (!numread))
+		{
+			break;
+		}
+		d += numread;
+		remaining -= numread;
+	}
+	GlobalUnlock(hg);
+	CloseHandle(h);
+
+	if (remaining)
+	{
+		GlobalFree(hg);
+		return 0;
+	}
+
+	stream = 0;
+	if (FAILED(CreateStreamOnHGlobal(hg,TRUE,&stream)) || (!stream))
+	{
+		GlobalFree(hg);
+		return 0;
+	}
+	// the stream owns hg now (fDeleteOnRelease = TRUE).
+
+	image = 0;
+	if (os_GdipLoadImageFromStream(stream,&image) == 0 && image)
+	{
+		w = 0;
+		hh = 0;
+		if ((os_GdipGetImageWidth(image,&w) == 0) && (os_GdipGetImageHeight(image,&hh) == 0) && w && hh)
+		{
+			*out_image = image;
+			*out_wide = (int)w;
+			*out_high = (int)hh;
+			stream->lpVtbl->Release(stream);
+			return 1;
+		}
+		os_GdipDisposeImage(image);
+	}
+	stream->lpVtbl->Release(stream);
+	return 0;
+}
+
+static void _viv_merge_add_file(_viv_merge_state_t *st,const wchar_t *path)
+{
+	void *image;
+	int w;
+	int h;
+
+	if (st->count >= VIV_MERGE_MAX_IMAGES)
+	{
+		return;
+	}
+	if (_viv_merge_load_image(path,&image,&w,&h))
+	{
+		os_GdipDisposeImage(image);
+		st->paths[st->count] = string_alloc(path);
+		st->wides[st->count] = w;
+		st->highs[st->count] = h;
+		st->count++;
+	}
+}
+
+static void _viv_merge_free(_viv_merge_state_t *st)
+{
+	int i;
+	for (i = 0;i < st->count;i++)
+	{
+		if (st->paths[i])
+		{
+			mem_free(st->paths[i]);
+			st->paths[i] = 0;
+		}
+	}
+	st->count = 0;
+}
+
+static void _viv_merge_filename(const wchar_t *path,wchar_t *out)
+{
+	const wchar_t *p;
+	const wchar_t *last;
+	p = path;
+	last = path;
+	while (*p)
+	{
+		if ((*p == L'\\') || (*p == L'/'))
+		{
+			last = p + 1;
+		}
+		p++;
+	}
+	string_copy(out,last);
+}
+
+// Geometry for a given column count. Returns 0 if the resulting canvas is too big.
+static int _viv_merge_geometry(_viv_merge_state_t *st,int cols,int *col_w,int *row_h,int *out_wide,int *out_high)
+{
+	int n;
+	int rows;
+	int i;
+	int c;
+	int r;
+	int W;
+	int H;
+
+	n = st->count;
+	if ((n <= 0) || (cols <= 0))
+	{
+		return 0;
+	}
+	rows = (n + cols - 1) / cols;
+	if (rows > VIV_MERGE_MAX_IMAGES)
+	{
+		return 0;
+	}
+
+	for (c = 0;c < cols;c++)
+	{
+		col_w[c] = 0;
+	}
+	for (r = 0;r < rows;r++)
+	{
+		row_h[r] = 0;
+	}
+
+	for (i = 0;i < n;i++)
+	{
+		c = i % cols;
+		r = i / cols;
+		if (st->wides[i] > col_w[c])
+		{
+			col_w[c] = st->wides[i];
+		}
+		if (st->highs[i] > row_h[r])
+		{
+			row_h[r] = st->highs[i];
+		}
+	}
+
+	W = st->pad * 2;
+	H = st->pad * 2;
+	for (c = 0;c < cols;c++)
+	{
+		W += col_w[c];
+	}
+	for (r = 0;r < rows;r++)
+	{
+		H += row_h[r];
+	}
+	W += st->gap * (cols - 1);
+	H += st->gap * (rows - 1);
+
+	if ((W <= 0) || (H <= 0) || (W > VIV_MERGE_MAX_DIM) || (H > VIV_MERGE_MAX_DIM))
+	{
+		return 0;
+	}
+	*out_wide = W;
+	*out_high = H;
+	return 1;
+}
+
+// Pick the column count. "auto" = least wasted area, tie-broken by 16:9.
+static int _viv_merge_choose_cols(_viv_merge_state_t *st,int *col_w,int *row_h,int *out_wide,int *out_high)
+{
+	int n;
+	int first;
+	int last;
+	int c;
+	int best;
+	double best_score;
+	int W;
+	int H;
+	int W2;
+	int H2;
+	__int64 waste;
+	__int64 area;
+	double aspect;
+	double dif;
+	double score;
+	int i;
+
+	n = st->count;
+	if (n <= 0)
+	{
+		return 0;
+	}
+	if (st->layout == 1)
+	{
+		first = n;
+		last = n;
+	}
+	else if (st->layout == 2)
+	{
+		first = 1;
+		last = 1;
+	}
+	else if (st->layout >= 3)
+	{
+		first = st->layout - 1; // 3 -> 2 cols, 4 -> 3 cols, 5 -> 4 cols
+		last = first;
+	}
+	else
+	{
+		first = 1;
+		last = n;
+	}
+
+	best = first;
+	best_score = 1e300;
+	for (c = first;c <= last;c++)
+	{
+		if (!_viv_merge_geometry(st,c,col_w,row_h,&W,&H))
+		{
+			continue;
+		}
+		area = (__int64)W * (__int64)H;
+		waste = area;
+		for (i = 0;i < n;i++)
+		{
+			waste -= (__int64)st->wides[i] * (__int64)st->highs[i];
+		}
+		if (waste < 0)
+		{
+			waste = 0;
+		}
+		aspect = (double)W / (double)H;
+		dif = aspect - (16.0 / 9.0);
+		if (dif < 0)
+		{
+			dif = -dif;
+		}
+		score = (double)waste + dif * 400000.0;
+		if (score < best_score)
+		{
+			best_score = score;
+			best = c;
+		}
+	}
+
+	if (!_viv_merge_geometry(st,best,col_w,row_h,&W2,&H2))
+	{
+		return 0;
+	}
+	*out_wide = W2;
+	*out_high = H2;
+	return best;
+}
+
+static int _viv_merge_export(_viv_merge_state_t *st,const wchar_t *out_path)
+{
+	int cols;
+	int col_w[VIV_MERGE_MAX_IMAGES];
+	int row_h[VIV_MERGE_MAX_IMAGES];
+	int W;
+	int H;
+	void *bitmap;
+	void *graphics;
+	DWORD bg_color;
+	const GUID *clsid;
+	int i;
+	int ok;
+
+	if (!os_GdipCreateBitmapFromScan0 || !os_GdipGetImageGraphicsContext || !os_GdipGraphicsClear ||
+		!os_GdipSaveImageToFile || !os_GdipDrawImageRectI || !os_GdipDeleteGraphics || !os_GdipDisposeImage)
+	{
+		return 0;
+	}
+
+	cols = _viv_merge_choose_cols(st,col_w,row_h,&W,&H);
+	if (cols <= 0)
+	{
+		return 0;
+	}
+
+	bg_color = 0xFFFFFFFF;
+	if (st->bg == 1)
+	{
+		bg_color = 0xFF000000;
+	}
+	else if (st->bg == 2)
+	{
+		bg_color = 0x00FFFFFF;
+	}
+	// JPG has no alpha channel; a transparent canvas would turn black.
+	if ((st->fmt == 1) && (st->bg == 2))
+	{
+		bg_color = 0xFFFFFFFF;
+	}
+
+	bitmap = 0;
+	if (os_GdipCreateBitmapFromScan0(W,H,0,VIV_MERGE_PIXEL_FORMAT_32ARGB,0,&bitmap) != 0 || (!bitmap))
+	{
+		return 0;
+	}
+
+	ok = 0;
+	graphics = 0;
+	if (os_GdipGetImageGraphicsContext(bitmap,&graphics) == 0 && graphics)
+	{
+		os_GdipGraphicsClear(graphics,bg_color);
+		if (os_GdipSetInterpolationMode)
+		{
+			os_GdipSetInterpolationMode(graphics,VIV_MERGE_INTERPOLATION_NEARESTNEIGHBOR);
+		}
+
+		for (i = 0;i < st->count;i++)
+		{
+			void *image;
+			int w;
+			int h;
+			int r;
+			int c;
+			int x;
+			int y;
+			int k;
+
+			if (!_viv_merge_load_image(st->paths[i],&image,&w,&h))
+			{
+				continue;
+			}
+			c = i % cols;
+			r = i / cols;
+			x = st->pad;
+			y = st->pad;
+			for (k = 0;k < c;k++)
+			{
+				x += col_w[k] + st->gap;
+			}
+			for (k = 0;k < r;k++)
+			{
+				y += row_h[k] + st->gap;
+			}
+			x += (col_w[c] - w) / 2;
+			y += (row_h[r] - h) / 2;
+			os_GdipDrawImageRectI(graphics,image,x,y,w,h); // w/h = original pixels -> 1:1
+			os_GdipDisposeImage(image);
+		}
+
+		// GDI+ requires the graphics object to be released before saving.
+		os_GdipDeleteGraphics(graphics);
+		clsid = st->fmt ? &_viv_merge_clsid_jpg : &_viv_merge_clsid_png;
+		if (os_GdipSaveImageToFile(bitmap,out_path,clsid,0) == 0)
+		{
+			ok = 1;
+		}
+	}
+	os_GdipDisposeImage(bitmap);
+	st->out_wide = W;
+	st->out_high = H;
+	return ok;
+}
+
+static void _viv_merge_combo_init(HWND hwnd,int id,int count,int first_id,int selected)
+{
+	HWND combo;
+	wchar_t wbuf[STRING_SIZE];
+	int i;
+	combo = GetDlgItem(hwnd,id);
+	for (i = 0;i < count;i++)
+	{
+		string_copy_utf8_string(wbuf,localization_get_string(first_id + i));
+		SendMessage(combo,CB_ADDSTRING,0,(LPARAM)wbuf);
+	}
+	SendMessage(combo,CB_SETCURSEL,selected,0);
+}
+
+static void _viv_merge_list_refresh(HWND hwnd,_viv_merge_state_t *st)
+{
+	HWND list;
+	wchar_t wbuf[STRING_SIZE];
+	int i;
+	list = GetDlgItem(hwnd,IDC_MERGE_LIST);
+	SendMessage(list,LB_RESETCONTENT,0,0);
+	for (i = 0;i < st->count;i++)
+	{
+		_viv_merge_filename(st->paths[i],wbuf);
+		SendMessage(list,LB_ADDSTRING,0,(LPARAM)wbuf);
+	}
+	if (st->count)
+	{
+		SendMessage(list,LB_SETCURSEL,0,0);
+	}
+}
+
+static void _viv_merge_info_refresh(HWND hwnd,_viv_merge_state_t *st)
+{
+	wchar_t wbuf[STRING_SIZE];
+	int col_w[VIV_MERGE_MAX_IMAGES];
+	int row_h[VIV_MERGE_MAX_IMAGES];
+	int W;
+	int H;
+	if (st->count <= 0)
+	{
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_INFO_EMPTY));
+	}
+	else if (_viv_merge_choose_cols(st,col_w,row_h,&W,&H) > 0)
+	{
+		string_printf(wbuf,"%d %s %d x %d",st->count,localization_get_string(LOCALIZATION_ID_MERGE_INFO),W,H);
+	}
+	else
+	{
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_TOO_LARGE));
+	}
+	SetDlgItemTextW(hwnd,IDC_MERGE_INFO,wbuf);
+}
+
+static void _viv_merge_read_params(HWND hwnd,_viv_merge_state_t *st)
+{
+	static const int gap_values[6] = {0,8,16,24,32,48};
+	static const int pad_values[5] = {0,12,24,32,48};
+	int i;
+	i = (int)SendMessage(GetDlgItem(hwnd,IDC_MERGE_LAYOUT),CB_GETCURSEL,0,0);
+	if (i >= 0) st->layout = i;
+	i = (int)SendMessage(GetDlgItem(hwnd,IDC_MERGE_GAP),CB_GETCURSEL,0,0);
+	if (i >= 0 && i < 6) st->gap = gap_values[i];
+	i = (int)SendMessage(GetDlgItem(hwnd,IDC_MERGE_PAD),CB_GETCURSEL,0,0);
+	if (i >= 0 && i < 5) st->pad = pad_values[i];
+	i = (int)SendMessage(GetDlgItem(hwnd,IDC_MERGE_BG),CB_GETCURSEL,0,0);
+	if (i >= 0) st->bg = i;
+	i = (int)SendMessage(GetDlgItem(hwnd,IDC_MERGE_FMT),CB_GETCURSEL,0,0);
+	if (i >= 0) st->fmt = i;
+}
+
+static void _viv_merge_pick_files(HWND parent,_viv_merge_state_t *st)
+{
+	OPENFILENAME ofn;
+	wchar_t buf[STRING_SIZE * 4];
+	wchar_t filter_wbuf[STRING_SIZE];
+	wchar_t title_wbuf[STRING_SIZE];
+	wchar_t dir_wbuf[STRING_SIZE];
+	wchar_t full_wbuf[STRING_SIZE];
+	wchar_t *p;
+	int len;
+
+	os_zero_memory(&ofn,sizeof(OPENFILENAME));
+	buf[0] = 0;
+	string_printf(filter_wbuf,"%s (*.bmp;*.gif;*.ico;*.jpeg;*.jpg;*.png;*.tif;*.tiff;*.webp)%c*.bmp;*.gif;*.ico;*.jpeg;*.jpg;*.png;*.tif;*.tiff;*.webp%c",localization_get_string(LOCALIZATION_ID_OPEN_ALL_IMAGE_FILES),0,0);
+	string_copy_utf8_string(title_wbuf,localization_get_string(LOCALIZATION_ID_MERGE_OPEN_CAPTION));
+
+	ofn.lStructSize = sizeof(OPENFILENAME);
+	ofn.hwndOwner = parent;
+	ofn.hInstance = os_hinstance;
+	ofn.lpstrFilter = filter_wbuf;
+	ofn.nFilterIndex = 1;
+	ofn.lpstrFile = buf;
+	ofn.nMaxFile = STRING_SIZE * 4;
+	ofn.lpstrTitle = title_wbuf;
+	ofn.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_ENABLESIZING | OFN_NOCHANGEDIR | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+
+	if (!GetOpenFileName(&ofn))
+	{
+		return;
+	}
+
+	p = buf;
+	len = (int)string_get_length(p);
+	if (p[len + 1] == 0)
+	{
+		_viv_merge_add_file(st,p); // single selection: full path
+	}
+	else
+	{
+		string_copy(dir_wbuf,p); // multi selection: directory then names
+		p += len + 1;
+		while (*p)
+		{
+			string_copy(full_wbuf,dir_wbuf);
+			string_cat_path_separator(full_wbuf);
+			string_cat(full_wbuf,p);
+			_viv_merge_add_file(st,full_wbuf);
+			p += string_get_length(p) + 1;
+		}
+	}
+}
+
+static void _viv_merge_move(HWND hwnd,_viv_merge_state_t *st,int delta)
+{
+	HWND list;
+	int sel;
+	int other;
+	wchar_t *tp;
+	int tw;
+	int th;
+	list = GetDlgItem(hwnd,IDC_MERGE_LIST);
+	sel = (int)SendMessage(list,LB_GETCURSEL,0,0);
+	other = sel + delta;
+	if ((sel < 0) || (other < 0) || (other >= st->count))
+	{
+		return;
+	}
+	tp = st->paths[sel];
+	tw = st->wides[sel];
+	th = st->highs[sel];
+	st->paths[sel] = st->paths[other];
+	st->wides[sel] = st->wides[other];
+	st->highs[sel] = st->highs[other];
+	st->paths[other] = tp;
+	st->wides[other] = tw;
+	st->highs[other] = th;
+	_viv_merge_list_refresh(hwnd,st);
+	SendMessage(list,LB_SETCURSEL,other,0);
+	_viv_merge_info_refresh(hwnd,st);
+}
+
+static void _viv_merge_remove(HWND hwnd,_viv_merge_state_t *st)
+{
+	HWND list;
+	int sel;
+	int i;
+	list = GetDlgItem(hwnd,IDC_MERGE_LIST);
+	sel = (int)SendMessage(list,LB_GETCURSEL,0,0);
+	if ((sel < 0) || (sel >= st->count))
+	{
+		return;
+	}
+	mem_free(st->paths[sel]);
+	for (i = sel;i + 1 < st->count;i++)
+	{
+		st->paths[i] = st->paths[i + 1];
+		st->wides[i] = st->wides[i + 1];
+		st->highs[i] = st->highs[i + 1];
+	}
+	st->count--;
+	_viv_merge_list_refresh(hwnd,st);
+	_viv_merge_info_refresh(hwnd,st);
+}
+
+static void _viv_merge_do_export(HWND hwnd,_viv_merge_state_t *st)
+{
+	OPENFILENAME ofn;
+	wchar_t out_wbuf[STRING_SIZE];
+	wchar_t filter_wbuf[STRING_SIZE];
+	wchar_t title_wbuf[STRING_SIZE];
+	wchar_t text_wbuf[STRING_SIZE];
+	wchar_t caption_wbuf[STRING_SIZE];
+	wchar_t done_wbuf[STRING_SIZE];
+
+	_viv_merge_read_params(hwnd,st);
+	if (st->count < 2)
+	{
+		string_copy_utf8_string(text_wbuf,localization_get_string(LOCALIZATION_ID_MERGE_NEED_TWO));
+		string_copy_utf8_string(caption_wbuf,localization_get_string(LOCALIZATION_ID_APP_NAME));
+		MessageBox(hwnd,text_wbuf,caption_wbuf,MB_OK | MB_ICONINFORMATION);
+		return;
+	}
+
+	os_zero_memory(&ofn,sizeof(OPENFILENAME));
+	out_wbuf[0] = 0;
+	string_printf(filter_wbuf,"%s (*.png)%c*.png%c%s (*.jpg)%c*.jpg%c",
+		localization_get_string(LOCALIZATION_ID_MERGE_FMT_PNG),0,0,
+		localization_get_string(LOCALIZATION_ID_MERGE_FMT_JPG),0,0);
+	string_copy_utf8_string(title_wbuf,localization_get_string(LOCALIZATION_ID_MERGE_SAVE_CAPTION));
+
+	ofn.lStructSize = sizeof(OPENFILENAME);
+	ofn.hwndOwner = hwnd;
+	ofn.hInstance = os_hinstance;
+	ofn.lpstrFilter = filter_wbuf;
+	ofn.nFilterIndex = st->fmt ? 2 : 1;
+	ofn.lpstrFile = out_wbuf;
+	ofn.nMaxFile = STRING_SIZE;
+	ofn.lpstrTitle = title_wbuf;
+	ofn.lpstrDefExt = st->fmt ? L"jpg" : L"png";
+	ofn.Flags = OFN_ENABLESIZING | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST;
+
+	if (!GetSaveFileName(&ofn))
+	{
+		return;
+	}
+
+	if (!_viv_merge_export(st,out_wbuf))
+	{
+		string_copy_utf8_string(text_wbuf,localization_get_string(LOCALIZATION_ID_MERGE_FAIL));
+		string_copy_utf8_string(caption_wbuf,localization_get_string(LOCALIZATION_ID_APP_NAME));
+		MessageBox(hwnd,text_wbuf,caption_wbuf,MB_OK | MB_ICONERROR);
+		return;
+	}
+
+	string_copy_utf8_string(caption_wbuf,localization_get_string(LOCALIZATION_ID_APP_NAME));
+	string_printf(done_wbuf,"%d %s %d x %d",st->count,localization_get_string(LOCALIZATION_ID_MERGE_DONE),st->out_wide,st->out_high);
+	MessageBox(hwnd,done_wbuf,caption_wbuf,MB_OK | MB_ICONINFORMATION);
+	EndDialog(hwnd,1);
+}
+
+static INT_PTR CALLBACK _viv_merge_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
+{
+	_viv_merge_state_t *st;
+	wchar_t wbuf[STRING_SIZE];
+
+	st = (_viv_merge_state_t *)GetWindowLongPtr(hwnd,GWLP_USERDATA);
+
+	switch (msg)
+	{
+	case WM_INITDIALOG:
+		st = (_viv_merge_state_t *)lParam;
+		SetWindowLongPtr(hwnd,GWLP_USERDATA,(LONG_PTR)st);
+
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_CAPTION));
+		SetWindowTextW(hwnd,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_ADD));
+		SetDlgItemTextW(hwnd,IDC_MERGE_ADD,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_REMOVE));
+		SetDlgItemTextW(hwnd,IDC_MERGE_REMOVE,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_UP));
+		SetDlgItemTextW(hwnd,IDC_MERGE_UP,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_DOWN));
+		SetDlgItemTextW(hwnd,IDC_MERGE_DOWN,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_LAYOUT));
+		SetDlgItemTextW(hwnd,IDC_MERGE_LAYOUT_LABEL,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_GAP));
+		SetDlgItemTextW(hwnd,IDC_MERGE_GAP_LABEL,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_PAD));
+		SetDlgItemTextW(hwnd,IDC_MERGE_PAD_LABEL,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_BG));
+		SetDlgItemTextW(hwnd,IDC_MERGE_BG_LABEL,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_FMT));
+		SetDlgItemTextW(hwnd,IDC_MERGE_FMT_LABEL,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_EXPORT));
+		SetDlgItemTextW(hwnd,IDOK,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_CANCEL));
+		SetDlgItemTextW(hwnd,IDCANCEL,wbuf);
+
+		_viv_merge_combo_init(hwnd,IDC_MERGE_LAYOUT,6,LOCALIZATION_ID_MERGE_LAYOUT_AUTO,st->layout);
+		_viv_merge_combo_init(hwnd,IDC_MERGE_BG,3,LOCALIZATION_ID_MERGE_BG_WHITE,st->bg);
+		_viv_merge_combo_init(hwnd,IDC_MERGE_FMT,2,LOCALIZATION_ID_MERGE_FMT_PNG,st->fmt);
+		{
+			HWND combo;
+			int i;
+			const char *numbers[6] = {"0","8","16","24","32","48"};
+			const char *pads[5] = {"0","12","24","32","48"};
+			combo = GetDlgItem(hwnd,IDC_MERGE_GAP);
+			for (i = 0;i < 6;i++)
+			{
+				string_copy_utf8_string(wbuf,(const utf8_t *)numbers[i]);
+				SendMessage(combo,CB_ADDSTRING,0,(LPARAM)wbuf);
+			}
+			SendMessage(combo,CB_SETCURSEL,2,0); // 16
+			combo = GetDlgItem(hwnd,IDC_MERGE_PAD);
+			for (i = 0;i < 5;i++)
+			{
+				string_copy_utf8_string(wbuf,(const utf8_t *)pads[i]);
+				SendMessage(combo,CB_ADDSTRING,0,(LPARAM)wbuf);
+			}
+			SendMessage(combo,CB_SETCURSEL,2,0); // 24
+		}
+		_viv_merge_list_refresh(hwnd,st);
+		_viv_merge_info_refresh(hwnd,st);
+		return TRUE;
+
+	case WM_COMMAND:
+		switch (LOWORD(wParam))
+		{
+		case IDOK:
+			_viv_merge_do_export(hwnd,st);
+			return TRUE;
+		case IDCANCEL:
+			EndDialog(hwnd,0);
+			return TRUE;
+		case IDC_MERGE_ADD:
+			_viv_merge_pick_files(hwnd,st);
+			_viv_merge_list_refresh(hwnd,st);
+			_viv_merge_info_refresh(hwnd,st);
+			return TRUE;
+		case IDC_MERGE_REMOVE:
+			_viv_merge_remove(hwnd,st);
+			return TRUE;
+		case IDC_MERGE_UP:
+			_viv_merge_move(hwnd,st,-1);
+			return TRUE;
+		case IDC_MERGE_DOWN:
+			_viv_merge_move(hwnd,st,1);
+			return TRUE;
+		case IDC_MERGE_LAYOUT:
+		case IDC_MERGE_GAP:
+		case IDC_MERGE_PAD:
+		case IDC_MERGE_BG:
+		case IDC_MERGE_FMT:
+			if (HIWORD(wParam) == CBN_SELCHANGE)
+			{
+				_viv_merge_read_params(hwnd,st);
+				_viv_merge_info_refresh(hwnd,st);
+			}
+			return TRUE;
+		}
+		break;
+	}
+	return FALSE;
+}
+
+static void _viv_merge_images_dialog(void)
+{
+	_viv_merge_state_t st;
+	os_zero_memory(&st,sizeof(_viv_merge_state_t));
+	st.layout = 0;
+	st.gap = 16;
+	st.pad = 24;
+	st.bg = 0;
+	st.fmt = 0;
+
+	_viv_merge_pick_files(_viv_hwnd,&st);
+	DialogBoxParam(os_hinstance,MAKEINTRESOURCE(IDD_MERGE),_viv_hwnd,_viv_merge_proc,(LPARAM)&st);
+	_viv_merge_free(&st);
 }
