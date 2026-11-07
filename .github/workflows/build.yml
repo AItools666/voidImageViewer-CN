@@ -18,15 +18,15 @@ jobs:
       - name: Build x64 Release
         run: msbuild vs2019\voidImageViewer.sln /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /m /nologo /v:m
 
-      - name: Build Win32 Release
-        run: msbuild vs2019\voidImageViewer.sln /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /m /nologo /v:m
+      # Win32 is disabled: upstream's Win32 configurations omit the VERSION_X86
+      # preprocessor define, so viv.c hits #error "unknown target machine".
+      # Re-enable once the vcxproj Win32 configs are patched.
 
       - name: Collect artifacts
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path out | Out-Null
           Copy-Item "vs2019\x64\Release\voidImageViewer.exe" out\voidImageViewer-CN-x64.exe
-          Copy-Item "vs2019\Win32\Release\voidImageViewer.exe" out\voidImageViewer-CN-Win32.exe
           Get-FileHash out\*.exe -Algorithm SHA256 | Format-List
 
       - name: Upload artifacts
