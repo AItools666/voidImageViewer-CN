@@ -125,6 +125,13 @@ extern BYTE config_language;
 // fork: full path of AI Visual Workbench executable
 extern wchar_t config_ai_workbench_path[1024];
 
+// fork: UX pack switches (classic look is preserved when all are off)
+extern BYTE config_dark_theme;
+extern BYTE config_show_file_progress;
+extern BYTE config_show_modified_time;
+extern BYTE config_escape_closes;
+extern BYTE config_show_zoom_osd;
+
 #ifdef __cplusplus
 }
 #endif

@@ -92,6 +92,11 @@ BYTE config_title_bar_format = 1; // 0=full path, 1=filename, 2=none
 int config_add_command_line_timeout = 500; // in milliseconds
 BYTE config_language = 0; // fork: 0=auto detect,1=english,2=simplified chinese
 wchar_t config_ai_workbench_path[STRING_SIZE] = L""; // fork: full path of AI Visual Workbench executable
+BYTE config_dark_theme = 0; // fork: dark theme (0 = classic)
+BYTE config_show_file_progress = 1; // fork: issue #36, folder position n/m in status bar
+BYTE config_show_modified_time = 0; // fork: issue #33, modified time in status bar
+BYTE config_escape_closes = 0; // fork: issue #93, one press of Esc quits
+BYTE config_show_zoom_osd = 1; // fork: zoom hint in status bar
 
 static void _config_load_settings_by_location(const wchar_t *path,int is_root)
 {
@@ -164,6 +169,11 @@ static void _config_load_settings_by_location(const wchar_t *path,int is_root)
 		config_title_bar_format = ini_get_int(ini,(const utf8_t *)"title_bar_format",config_title_bar_format);
 		config_add_command_line_timeout = ini_get_int(ini,(const utf8_t *)"add_command_line_timeout",config_add_command_line_timeout);
 		config_language = ini_get_int(ini,(const utf8_t *)"language",config_language); // fork
+		config_dark_theme = ini_get_int(ini,(const utf8_t *)"dark_theme",config_dark_theme); // fork
+		config_show_file_progress = ini_get_int(ini,(const utf8_t *)"show_file_progress",config_show_file_progress); // fork
+		config_show_modified_time = ini_get_int(ini,(const utf8_t *)"show_modified_time",config_show_modified_time); // fork
+		config_escape_closes = ini_get_int(ini,(const utf8_t *)"escape_closes",config_escape_closes); // fork
+		config_show_zoom_osd = ini_get_int(ini,(const utf8_t *)"show_zoom_osd",config_show_zoom_osd); // fork
 
 		// fork: AI Visual Workbench executable path
 		{
@@ -362,6 +372,11 @@ static void _config_save_settings_by_location(const wchar_t *path,int is_root)
 			_config_write_int(h,"add_command_line_timeout",config_add_command_line_timeout);
 			_config_write_int(h,"language",config_language); // fork
 			_config_write_string(h,"ai_workbench_path",config_ai_workbench_path); // fork
+			_config_write_int(h,"dark_theme",config_dark_theme); // fork
+			_config_write_int(h,"show_file_progress",config_show_file_progress); // fork
+			_config_write_int(h,"show_modified_time",config_show_modified_time); // fork
+			_config_write_int(h,"escape_closes",config_escape_closes); // fork
+			_config_write_int(h,"show_zoom_osd",config_show_zoom_osd); // fork
 					
 			// save keys
 			{

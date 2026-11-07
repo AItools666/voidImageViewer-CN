@@ -485,6 +485,7 @@ static void _viv_increase_rate(int dec);
 static void _viv_file_preview(void);
 static void _viv_file_print(void);
 static void _viv_file_set_desktop_wallpaper(void);
+static void _viv_apply_dark_theme(void); // fork
 static void _viv_file_send_ai_workbench(void); // fork
 static void _viv_set_language(int language); // fork
 static void _viv_edit_rotate(int counterclockwise);
@@ -822,6 +823,7 @@ static _viv_command_t _viv_commands[] =
 	{LOCALIZATION_ID_RENAME,MF_STRING,_VIV_MENU_FILE,VIV_ID_FILE_RENAME},
 	{LOCALIZATION_ID_PROPERTIES,MF_STRING,_VIV_MENU_FILE,VIV_ID_FILE_PROPERTIES},
 	{LOCALIZATION_ID_SEND_AI_WORKBENCH,MF_STRING|MF_OWNERDRAW,_VIV_MENU_FILE,VIV_ID_FILE_SEND_AI_WORKBENCH}, // fork
+	{LOCALIZATION_ID_FILE_ASSOCIATE_ALL,MF_STRING,_VIV_MENU_FILE,VIV_ID_FILE_ASSOCIATE_ALL}, // fork
 	{LOCALIZATION_ID_INVALID,MF_SEPARATOR,_VIV_MENU_FILE,0},
 	{LOCALIZATION_ID_EXIT,MF_STRING,_VIV_MENU_FILE,VIV_ID_FILE_EXIT},
 	
@@ -846,6 +848,12 @@ static _viv_command_t _viv_commands[] =
 	{LOCALIZATION_ID_MENU,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_MENU},
 	{LOCALIZATION_ID_STATUS_BAR,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_STATUS},
 	{LOCALIZATION_ID_CONTROLS,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_CONTROLS},
+	{LOCALIZATION_ID_INVALID,MF_SEPARATOR,_VIV_MENU_VIEW,0},
+	{LOCALIZATION_ID_VIEW_DARK_THEME,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_DARK_THEME}, // fork
+	{LOCALIZATION_ID_VIEW_FILE_PROGRESS,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_FILE_PROGRESS}, // fork
+	{LOCALIZATION_ID_VIEW_MODIFIED_TIME,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_MODIFIED_TIME}, // fork
+	{LOCALIZATION_ID_VIEW_ESCAPE_CLOSES,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_ESCAPE_CLOSES}, // fork
+	{LOCALIZATION_ID_VIEW_ZOOM_OSD,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_ZOOM_OSD}, // fork
 	{LOCALIZATION_ID_PRESET,MF_POPUP,_VIV_MENU_VIEW,_VIV_MENU_VIEW_PRESET},
 	{LOCALIZATION_ID_MINIMAL,MF_STRING,_VIV_MENU_VIEW_PRESET,VIV_ID_VIEW_PRESET_1},
 	{LOCALIZATION_ID_COMPACT,MF_STRING,_VIV_MENU_VIEW_PRESET,VIV_ID_VIEW_PRESET_2},
@@ -1126,6 +1134,7 @@ WORD _viv_context_menu_items[] =
 	0,
 	VIV_ID_FILE_PROPERTIES,
 	VIV_ID_FILE_SEND_AI_WORKBENCH, // fork
+	VIV_ID_FILE_ASSOCIATE_ALL, // fork
 	VIV_ID_VIEW_OPTIONS,
 	0,
 	VIV_ID_FILE_EXIT,
@@ -2312,7 +2321,7 @@ debug_printf("SWP %d %d %d %d\n",rect.left,rect.top,rect.right - rect.left,rect.
 			_viv_dst_pos_x = 500;
 			_viv_dst_pos_y = 500;
 			InvalidateRect(_viv_hwnd,NULL,FALSE);
-			_viv_status_update_temp_pos_zoom();	
+			if (config_show_zoom_osd) _viv_status_update_temp_pos_zoom();	
 			break;
 			
 		case VIV_ID_VIEW_PANSCAN_RESET:
@@ -2508,6 +2517,46 @@ debug_printf("SWP %d %d %d %d\n",rect.left,rect.top,rect.right - rect.left,rect.
 			_viv_set_language(2);
 			break;
 			
+				case VIV_ID_VIEW_DARK_THEME:
+			config_dark_theme = !config_dark_theme;
+			config_save_settings(config_appdata);
+			_viv_apply_dark_theme();
+			break;
+
+		case VIV_ID_VIEW_FILE_PROGRESS:
+			config_show_file_progress = !config_show_file_progress;
+			config_save_settings(config_appdata);
+			_viv_status_update();
+			break;
+
+		case VIV_ID_VIEW_MODIFIED_TIME:
+			config_show_modified_time = !config_show_modified_time;
+			config_save_settings(config_appdata);
+			_viv_status_update();
+			break;
+
+		case VIV_ID_VIEW_ESCAPE_CLOSES:
+			config_escape_closes = !config_escape_closes;
+			config_save_settings(config_appdata);
+			break;
+
+		case VIV_ID_VIEW_ZOOM_OSD:
+			config_show_zoom_osd = !config_show_zoom_osd;
+			config_save_settings(config_appdata);
+			break;
+
+		case VIV_ID_FILE_ASSOCIATE_ALL:
+			_viv_install_association(0x1FF); // fork: all 9 supported extensions (issues #21/#76)
+			{
+				wchar_t text_wbuf[STRING_SIZE];
+				wchar_t caption_wbuf[STRING_SIZE];
+
+				string_copy_utf8_string(text_wbuf,localization_get_string(LOCALIZATION_ID_ASSOCIATE_ALL_DONE));
+				string_copy_utf8_string(caption_wbuf,localization_get_string(LOCALIZATION_ID_APP_NAME));
+				MessageBox(_viv_hwnd,text_wbuf,caption_wbuf,MB_OK|MB_ICONINFORMATION);
+			}
+			break;
+
 		case VIV_ID_EDIT_ROTATE_270:
 			_viv_edit_rotate(1);
 			break;
@@ -3993,6 +4042,34 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 			switch(((NMHDR *)lParam)->idFrom)
 			{
 				case VIV_ID_STATUS:
+				// fork: dark status bar text
+				if (config_dark_theme)
+				{
+					NMHDR *nmhdr;
+
+					nmhdr = (NMHDR *)lParam;
+
+					if (nmhdr->code == NM_CUSTOMDRAW)
+					{
+						NMCUSTOMDRAW *nmcd;
+
+						nmcd = (NMCUSTOMDRAW *)lParam;
+
+						if (nmcd->dwDrawStage == CDDS_PREPAINT)
+						{
+							return CDRF_NOTIFYITEMDRAW;
+						}
+
+						if (nmcd->dwDrawStage == CDDS_ITEMPREPAINT)
+						{
+							SetTextColor(nmcd->hdc,RGB(216,221,226));
+							SetBkColor(nmcd->hdc,RGB(36,39,44));
+							return CDRF_NEWFONT;
+						}
+					}
+				}
+				// original status notifies follow
+
 				
 					if (_viv_status_hwnd)
 					{
@@ -4414,7 +4491,7 @@ debug_printf("PAINT %d %d %d\n",_viv_frame_position,rw,rh);
 					{
 						HBRUSH hbrush;
 						
-						hbrush = CreateSolidBrush(_viv_is_fullscreen ? RGB(config_fullscreen_background_color_r,config_fullscreen_background_color_g,config_fullscreen_background_color_b) : RGB(config_windowed_background_color_r,config_windowed_background_color_g,config_windowed_background_color_b));
+						if (config_dark_theme) hbrush = CreateSolidBrush(RGB(28,30,34)); else hbrush = CreateSolidBrush(_viv_is_fullscreen ? RGB(config_fullscreen_background_color_r,config_fullscreen_background_color_g,config_fullscreen_background_color_b) : RGB(config_windowed_background_color_r,config_windowed_background_color_g,config_windowed_background_color_b));
 						
 						if (hbrush)
 						{
@@ -5437,6 +5514,9 @@ static int _viv_init(int nCmdShow)
 	}
 		
 	_viv_status_show(config_show_status);
+
+	_viv_apply_dark_theme(); // fork
+
 	_viv_controls_show(config_show_controls);
 	
 	DragAcceptFiles(_viv_hwnd,TRUE);
@@ -6391,6 +6471,13 @@ static int _viv_is_msg(MSG *msg)
 					// cancel action
 					if ((key_flags == 0) && (msg->wParam == VK_ESCAPE))
 					{
+						// fork: issue #93, one press of Esc quits
+						if (config_escape_closes)
+						{
+							PostMessage(_viv_hwnd,WM_CLOSE,0,0);
+							return 1;
+						}
+
 						if (_viv_doing)
 						{
 							_viv_doing_cancel();
@@ -7101,7 +7188,14 @@ static void _viv_check_menus(HMENU hmenu)
 	int slideshow_rate_id;
 	UINT is_image_enabled;
 
-	// fork: language radio checks
+		// fork: UX pack switches
+	CheckMenuItem(hmenu,VIV_ID_VIEW_DARK_THEME,config_dark_theme ? MF_CHECKED : MF_UNCHECKED);
+	CheckMenuItem(hmenu,VIV_ID_VIEW_FILE_PROGRESS,config_show_file_progress ? MF_CHECKED : MF_UNCHECKED);
+	CheckMenuItem(hmenu,VIV_ID_VIEW_MODIFIED_TIME,config_show_modified_time ? MF_CHECKED : MF_UNCHECKED);
+	CheckMenuItem(hmenu,VIV_ID_VIEW_ESCAPE_CLOSES,config_escape_closes ? MF_CHECKED : MF_UNCHECKED);
+	CheckMenuItem(hmenu,VIV_ID_VIEW_ZOOM_OSD,config_show_zoom_osd ? MF_CHECKED : MF_UNCHECKED);
+
+// fork: language radio checks
 	CheckMenuItem(hmenu,VIV_ID_HELP_LANGUAGE_ENGLISH,(localization_get_language() == LOCALIZATION_LANGUAGE_ENGLISH) ? (MF_CHECKED|MFT_RADIOCHECK) : (MF_UNCHECKED|MFT_RADIOCHECK));
 	CheckMenuItem(hmenu,VIV_ID_HELP_LANGUAGE_CHINESE,(localization_get_language() == LOCALIZATION_LANGUAGE_CHINESE_SIMPLIFIED) ? (MF_CHECKED|MFT_RADIOCHECK) : (MF_UNCHECKED|MFT_RADIOCHECK));
 
@@ -7824,6 +7918,40 @@ static void _viv_set_language(int language)
 	string_copy_utf8_string(caption_wbuf,localization_get_string(LOCALIZATION_ID_APP_NAME));
 
 	MessageBox(_viv_hwnd,text_wbuf,caption_wbuf,MB_OK|MB_ICONINFORMATION);
+}
+
+static void _viv_apply_dark_theme(void)
+{
+	// fork: immersive dark title bar (Win10 1903+), silently skipped when unavailable.
+	{
+		HMODULE dwm;
+
+		dwm = LoadLibraryW(L"dwmapi.dll");
+
+		if (dwm)
+		{
+			HRESULT (WINAPI *set_attr)(HWND,DWORD,LPCVOID,DWORD);
+			BOOL enable;
+
+			set_attr = (HRESULT (WINAPI *)(HWND,DWORD,LPCVOID,DWORD))GetProcAddress(dwm,"DwmSetWindowAttribute");
+			enable = config_dark_theme ? TRUE : FALSE;
+
+			if (set_attr)
+			{
+				set_attr(_viv_hwnd,20,&enable,sizeof(enable)); // DWMWA_USE_IMMERSIVE_DARK_MODE
+			}
+
+			FreeLibrary(dwm);
+		}
+	}
+
+	if (_viv_status_hwnd)
+	{
+		SendMessage(_viv_status_hwnd,WM_USER + 2001,0,config_dark_theme ? (LPARAM)RGB(36,39,44) : (LPARAM)0xFF000000); // SB_SETBKCOLOR
+		InvalidateRect(_viv_status_hwnd,0,TRUE);
+	}
+
+	InvalidateRect(_viv_hwnd,0,TRUE);
 }
 
 static void _viv_edit_rotate(int counterclockwise)
@@ -9875,7 +10003,7 @@ static INT_PTR CALLBACK _viv_about_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 			FillRect(ps.hdc,&rect,(HBRUSH)(COLOR_BTNHIGHLIGHT + 1));
 			rect.top = rect.bottom;
 			rect.bottom+=(46 * os_logical_high) / 96;
-			FillRect(ps.hdc,&rect,(HBRUSH)(COLOR_BTNFACE + 1));
+			if (config_dark_theme) { HBRUSH _sb = CreateSolidBrush(RGB(36,39,44)); FillRect(ps.hdc,&rect,_sb); DeleteObject(_sb); } else FillRect(ps.hdc,&rect,(HBRUSH)(COLOR_BTNFACE + 1));
 			EndPaint(hwnd,&ps);
 			break;
 		}
@@ -10107,7 +10235,7 @@ static void _viv_dst_pos_set(int x,int y)
 		InvalidateRect(_viv_hwnd,NULL,FALSE);
 	}
 
-	_viv_status_update_temp_pos_zoom();	
+	if (config_show_zoom_osd) _viv_status_update_temp_pos_zoom();	
 }
 
 static void _viv_dst_zoom_set(int x,int y)
@@ -10140,7 +10268,7 @@ static void _viv_dst_zoom_set(int x,int y)
 		InvalidateRect(_viv_hwnd,NULL,FALSE);
 	}
 
-	_viv_status_update_temp_pos_zoom();	
+	if (config_show_zoom_osd) _viv_status_update_temp_pos_zoom();	
 	/*
 	{
 		RECT rect;
@@ -11291,6 +11419,73 @@ static void _viv_status_update(void)
 			}
 		}
 		
+		// fork: folder position (issue #36) and modified time (issue #33)
+		{
+			wchar_t prefix_buf[STRING_SIZE];
+
+			*prefix_buf = 0;
+
+			if ((config_show_file_progress) && (_viv_playlist_count > 1) && (_viv_current_fd))
+			{
+				_viv_playlist_t *p;
+				int pos;
+
+				pos = 0;
+				p = _viv_playlist_start;
+
+				while(p)
+				{
+					pos++;
+
+					if ((p->fd.dwReserved0 == _viv_current_fd->dwReserved0) && (p->fd.dwReserved1 == _viv_current_fd->dwReserved1))
+					{
+						break;
+					}
+
+					p = p->next;
+				}
+
+				if (p)
+				{
+					wchar_t nbuf[64];
+					wchar_t tbuf[64];
+
+					string_format_number(nbuf,pos);
+					string_format_number(tbuf,_viv_playlist_count);
+					string_copy(prefix_buf,nbuf);
+					string_cat_utf8(prefix_buf,(const utf8_t *)"/");
+					string_cat(prefix_buf,tbuf);
+					string_cat_utf8(prefix_buf,(const utf8_t *)"  ");
+				}
+			}
+
+			if ((config_show_modified_time) && (*_viv_frame_fd->cFileName))
+			{
+				FILETIME ft;
+				SYSTEMTIME st;
+
+				ft.dwLowDateTime = _viv_frame_fd->ftLastWriteTime.dwLowDateTime;
+				ft.dwHighDateTime = _viv_frame_fd->ftLastWriteTime.dwHighDateTime;
+
+				if ((FileTimeToLocalFileTime(&ft,&ft)) && (FileTimeToSystemTime(&ft,&st)))
+				{
+					wchar_t dbuf[64];
+
+					string_printf(dbuf,"%04d-%02d-%02d %02d:%02d  ",st.wYear,st.wMonth,st.wDay,st.wHour,st.wMinute);
+					string_cat(prefix_buf,dbuf);
+				}
+			}
+
+			if (*prefix_buf)
+			{
+				wchar_t tmp[STRING_SIZE];
+
+				string_copy(tmp,prefix_buf);
+				string_cat(tmp,dimension_buf);
+				string_copy(dimension_buf,tmp);
+			}
+		}
+
 		if (_viv_frame_count > 1)
 		{
 			int frame_pos;
@@ -11595,7 +11790,7 @@ static LRESULT CALLBACK _viv_rebar_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 									{
 										RECT rect;
 										GetClientRect(_viv_toolbar_hwnd,&rect);
-										FillRect(((NMTBCUSTOMDRAW *)lParam)->nmcd.hdc,&rect,(HBRUSH)(COLOR_BTNFACE+1));
+										if (config_dark_theme) { HBRUSH _hb = CreateSolidBrush(RGB(36,39,44)); FillRect(((NMTBCUSTOMDRAW *)lParam)->nmcd.hdc,&rect,_hb); DeleteObject(_hb); } else FillRect(((NMTBCUSTOMDRAW *)lParam)->nmcd.hdc,&rect,(HBRUSH)(COLOR_BTNFACE+1));
 										return CDRF_NOTIFYITEMDRAW;
 									}
 								}
@@ -11633,7 +11828,7 @@ static LRESULT CALLBACK _viv_rebar_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 			rect.bottom = 1;
 			
 //			FillRect(ps.hdc,&rect,(HBRUSH)(COLOR_WINDOW + 1));
-			FillRect(ps.hdc,&rect,(HBRUSH)(COLOR_3DSHADOW + 1));
+			if (config_dark_theme) { HBRUSH _sb = CreateSolidBrush(RGB(18,20,23)); FillRect(ps.hdc,&rect,_sb); DeleteObject(_sb); } else FillRect(ps.hdc,&rect,(HBRUSH)(COLOR_3DSHADOW + 1));
 			
 			rect.left = 0;
 			rect.top = 1;
@@ -11641,7 +11836,7 @@ static LRESULT CALLBACK _viv_rebar_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 			rect.bottom = 2;
 			
 //			FillRect(ps.hdc,&rect,(HBRUSH)(COLOR_WINDOW + 1));
-			FillRect(ps.hdc,&rect,(HBRUSH)(COLOR_3DHIGHLIGHT + 1));
+			if (config_dark_theme) { HBRUSH _sb = CreateSolidBrush(RGB(52,56,62)); FillRect(ps.hdc,&rect,_sb); DeleteObject(_sb); } else FillRect(ps.hdc,&rect,(HBRUSH)(COLOR_3DHIGHLIGHT + 1));
 			
 			rect.left = 0;
 			rect.top = 2;
@@ -11649,7 +11844,7 @@ static LRESULT CALLBACK _viv_rebar_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 			rect.bottom = high;
 			
 //			FillRect(ps.hdc,&rect,(HBRUSH)(COLOR_WINDOW + 1));
-			FillRect(ps.hdc,&rect,(HBRUSH)(COLOR_BTNFACE + 1));
+			if (config_dark_theme) { HBRUSH _sb = CreateSolidBrush(RGB(36,39,44)); FillRect(ps.hdc,&rect,_sb); DeleteObject(_sb); } else FillRect(ps.hdc,&rect,(HBRUSH)(COLOR_BTNFACE + 1));
 			
 			EndPaint(hwnd,&ps);
 			

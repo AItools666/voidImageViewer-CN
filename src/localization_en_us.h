@@ -305,4 +305,13 @@ static const utf8_t *_localization_string_array_en_us[LOCALIZATION_ID_COUNT] =
 	"&English", // LOCALIZATION_ID_LANGUAGE_ENGLISH,
 	"&Chinese (Simplified)", // LOCALIZATION_ID_LANGUAGE_CHINESE,
 	"Language saved. Restart void Image Viewer to fully apply.", // LOCALIZATION_ID_LANGUAGE_RESTART_NOTICE,
+
+	// UX pack (fork)
+	"&Dark Theme", // LOCALIZATION_ID_VIEW_DARK_THEME,
+	"Show File &Position", // LOCALIZATION_ID_VIEW_FILE_PROGRESS,
+	"Show &Modified Time", // LOCALIZATION_ID_VIEW_MODIFIED_TIME,
+	"&Escape Closes App", // LOCALIZATION_ID_VIEW_ESCAPE_CLOSES,
+	"Show &Zoom Hint", // LOCALIZATION_ID_VIEW_ZOOM_OSD,
+	"Set as &Default Viewer (All Formats)", // LOCALIZATION_ID_FILE_ASSOCIATE_ALL,
+	"Associated 9 image formats. Double-click an image to open it here.", // LOCALIZATION_ID_ASSOCIATE_ALL_DONE,
 };

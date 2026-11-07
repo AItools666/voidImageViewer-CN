@@ -285,16 +285,16 @@ static const utf8_t *_localization_string_array_zh_cn[LOCALIZATION_ID_COUNT] =
 	"复制到", // LOCALIZATION_ID_COPY_TO_CAPTION,
 	"移动到", // LOCALIZATION_ID_MOVE_TO_CAPTION,
 
-	// Association descriptions
-	"Bitmap Image",
-	"Animated GIF Image",
-	"Icon File",
-	"JPEG Image",
-	"JPEG Image",
-	"PNG Image",
-	"TIFF Image",
-	"TIFF Image",
-	"WebP Image",
+	// Association descriptions (fork: translated)
+	"位图图像",
+	"动态 GIF 图像",
+	"图标文件",
+	"JPEG 图像",
+	"JPEG 图像",
+	"PNG 图像",
+	"TIFF 图像",
+	"TIFF 图像",
+	"WebP 图像",
 
 	// AI Visual Workbench integration (fork)
 	"发送到 AI视觉工作台(&K)", // LOCALIZATION_ID_SEND_AI_WORKBENCH,
@@ -306,4 +306,13 @@ static const utf8_t *_localization_string_array_zh_cn[LOCALIZATION_ID_COUNT] =
 	"英语(&E)", // LOCALIZATION_ID_LANGUAGE_ENGLISH,
 	"简体中文(&C)", // LOCALIZATION_ID_LANGUAGE_CHINESE,
 	"语言已保存，重启 void Image Viewer 后完全生效。", // LOCALIZATION_ID_LANGUAGE_RESTART_NOTICE,
+
+	// UX pack (fork)
+	"暗色主题(&D)", // LOCALIZATION_ID_VIEW_DARK_THEME,
+	"显示文件进度(&P)", // LOCALIZATION_ID_VIEW_FILE_PROGRESS,
+	"显示修改时间(&M)", // LOCALIZATION_ID_VIEW_MODIFIED_TIME,
+	"Esc 直接退出(&E)", // LOCALIZATION_ID_VIEW_ESCAPE_CLOSES,
+	"显示缩放提示(&Z)", // LOCALIZATION_ID_VIEW_ZOOM_OSD,
+	"设为默认看图程序（全部格式）(&A)", // LOCALIZATION_ID_FILE_ASSOCIATE_ALL,
+	"已将 9 种图片格式关联到本程序，双击图片即可用它打开。", // LOCALIZATION_ID_ASSOCIATE_ALL_DONE,
 };
