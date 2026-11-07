@@ -351,7 +351,7 @@ static const utf8_t *_localization_string_array_zh_cn[LOCALIZATION_ID_COUNT] =
 	"合并后的尺寸过大（单边超过 30000 像素），请减少图片数量。", // LOCALIZATION_ID_MERGE_TOO_LARGE,
 	"合并预览（与导出结果一致）：", // LOCALIZATION_ID_MERGE_PREVIEW_LABEL,
 	"添加 2 张及以上图片后，这里会显示实际合并效果", // LOCALIZATION_ID_MERGE_PREVIEW_EMPTY,
-	"编号表示顺序；自由摆放下可直接拖动图片，重叠时序号大的在上层。", // LOCALIZATION_ID_MERGE_PREVIEW_HINT,
+	"编号表示顺序；拖动任一图片，其余图片按尺寸自动紧凑拼接，互不重叠。", // LOCALIZATION_ID_MERGE_PREVIEW_HINT,
 	"自由摆放（可拖动）", // LOCALIZATION_ID_MERGE_LAYOUT_FREE,
 	"重新紧凑排布(&T)", // LOCALIZATION_ID_MERGE_COMPACT,
 };

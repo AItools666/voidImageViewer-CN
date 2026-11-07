@@ -16067,6 +16067,12 @@ static int _viv_safe_copy_data(const void *base,SIZE_T src_size,const void *src,
 #define VIV_MERGE_MAX_DIM 30000
 #define VIV_MERGE_PIXEL_FORMAT_32ARGB 0x26200A
 #define VIV_MERGE_INTERPOLATION_NEARESTNEIGHBOR 5
+// v8: keep decoded source bitmaps instead of re-reading/re-decoding them on
+// every mouse-move repaint. 48 Mpix ~= 192 MB worst case; above that we fall
+// back to one-shot loading, so 64 huge images can never exhaust memory.
+#define VIV_MERGE_CACHE_BUDGET ((__int64)48000000)
+#define VIV_MERGE_CAND_LIMIT 32
+#define VIV_MERGE_CAND_MAX (VIV_MERGE_MAX_IMAGES * 2 + 2)
 
 static const GUID _viv_merge_clsid_png = {0x557cf406,0x1a04,0x11d3,{0x9a,0x73,0x00,0x00,0xf8,0x1e,0xf3,0x2e}};
 static const GUID _viv_merge_clsid_jpg = {0x557cf401,0x1a04,0x11d3,{0x9a,0x73,0x00,0x00,0xf8,0x1e,0xf3,0x2e}};
@@ -16099,11 +16105,29 @@ typedef struct _viv_merge_state_s
 	double drag_scale;
 	int drag_cx;
 	int drag_cy;
+	int drag_wide;
+	int drag_high;
+	int drag_moved;
+	DWORD last_reflow_tick;
 	double view_scale;
 	int view_cx;
 	int view_cy;
 	int view_valid;
+
+	// v8: decoded images are cached, so a mouse-move repaint never re-reads
+	// and re-decodes every source file (the main source of the old flicker).
+	void *images[VIV_MERGE_MAX_IMAGES];
+	__int64 cached_pixels;
+
+	// v8: the "default layout frame" is the canvas size produced by the
+	// compact packer. After a drag the OTHER images are re-packed inside this
+	// frame, so the merge keeps a harmonious, stable composition.
+	int anchored;
+	int frame_wide;
+	int frame_high;
 }_viv_merge_state_t;
+
+static void _viv_merge_info_refresh(HWND hwnd,_viv_merge_state_t *st);
 
 // Load one image through the existing GDI+ stream path. Caller owns *out_image.
 static int _viv_merge_load_image(const wchar_t *path,void **out_image,int *out_wide,int *out_high)
@@ -16216,10 +16240,18 @@ static void _viv_merge_add_file(_viv_merge_state_t *st,const wchar_t *path)
 	}
 	if (_viv_merge_load_image(path,&image,&w,&h))
 	{
-		os_GdipDisposeImage(image);
 		st->paths[st->count] = string_alloc(path);
 		st->wides[st->count] = w;
 		st->highs[st->count] = h;
+		if ((st->cached_pixels + (__int64)w * (__int64)h) <= VIV_MERGE_CACHE_BUDGET)
+		{
+			st->images[st->count] = image; // keep decoded, reused by preview + export
+			st->cached_pixels += (__int64)w * (__int64)h;
+		}
+		else
+		{
+			os_GdipDisposeImage(image);
+		}
 		st->count++;
 		st->free_ready = 0;
 		st->free_touched = 0;
@@ -16231,6 +16263,11 @@ static void _viv_merge_free(_viv_merge_state_t *st)
 	int i;
 	for (i = 0;i < st->count;i++)
 	{
+		if (st->images[i] && os_GdipDisposeImage)
+		{
+			os_GdipDisposeImage(st->images[i]);
+			st->images[i] = 0;
+		}
 		if (st->paths[i])
 		{
 			mem_free(st->paths[i]);
@@ -16238,6 +16275,40 @@ static void _viv_merge_free(_viv_merge_state_t *st)
 		}
 	}
 	st->count = 0;
+	st->cached_pixels = 0;
+}
+
+// Return a decoded GDI+ image for item i. Cached images are owned by the
+// state; *owned tells the caller whether it must dispose the returned image.
+static void *_viv_merge_image(_viv_merge_state_t *st,int i,int *owned)
+{
+	void *image;
+	int w;
+	int h;
+
+	*owned = 0;
+	if ((i < 0) || (i >= st->count))
+	{
+		return 0;
+	}
+	if (st->images[i])
+	{
+		return st->images[i];
+	}
+	if (!_viv_merge_load_image(st->paths[i],&image,&w,&h))
+	{
+		return 0;
+	}
+	if ((st->cached_pixels + (__int64)w * (__int64)h) <= VIV_MERGE_CACHE_BUDGET)
+	{
+		st->images[i] = image;
+		st->cached_pixels += (__int64)w * (__int64)h;
+	}
+	else
+	{
+		*owned = 1;
+	}
+	return image;
 }
 
 static void _viv_merge_filename(const wchar_t *path,wchar_t *out)
@@ -16512,6 +16583,9 @@ static void _viv_merge_compact(_viv_merge_state_t *st)
 	}
 	st->free_ready = 1;
 	st->free_touched = 0;
+	st->anchored = 0;
+	st->frame_wide = 0;
+	st->frame_high = 0;
 }
 
 // ONE geometry entry point: fills st->item_x/item_y and returns canvas size.
@@ -16546,6 +16620,14 @@ static int _viv_merge_prepare(_viv_merge_state_t *st,int *out_wide,int *out_high
 		}
 		W += st->pad;
 		H += st->pad;
+		// v8: keep the default compact frame as the minimum canvas, so a drag
+		// re-packs the other images INSIDE the original layout instead of
+		// leaving them fixed or letting the canvas jump around.
+		if (st->anchored)
+		{
+			if (W < st->frame_wide) W = st->frame_wide;
+			if (H < st->frame_high) H = st->frame_high;
+		}
 	}
 	else
 	{
@@ -16567,6 +16649,212 @@ static int _viv_merge_prepare(_viv_merge_state_t *st,int *out_wide,int *out_high
 	*out_wide = W;
 	*out_high = H;
 	return 1;
+}
+
+// ---------------------------------------------------------------------------
+// v8: automatic re-pack. The image the user drops is the anchor; all the other
+// images are placed again with a bottom-left / best-fit search so they line up
+// by size inside the DEFAULT compact frame. Nothing overlaps, so no source
+// pixels are hidden in the exported bitmap and the canvas never runs away.
+// ---------------------------------------------------------------------------
+static int _viv_merge_hit(int ax,int ay,int aw,int ah,int bx,int by,int bw,int bh,int gap)
+{
+	return (ax < bx + bw + gap) && (bx < ax + aw + gap) &&
+	       (ay < by + bh + gap) && (by < ay + ah + gap);
+}
+
+// Sort + de-duplicate candidate coordinates, keep the leftmost/topmost ones.
+static int _viv_merge_cand(int *v,int n,int limit)
+{
+	int i;
+	int j;
+	int t;
+	int m;
+
+	for (i = 1;i < n;i++)
+	{
+		t = v[i];
+		j = i - 1;
+		while ((j >= 0) && (v[j] > t))
+		{
+			v[j + 1] = v[j];
+			j--;
+		}
+		v[j + 1] = t;
+	}
+	m = 0;
+	for (i = 0;i < n;i++)
+	{
+		if ((m == 0) || (v[i] != v[m - 1]))
+		{
+			v[m++] = v[i];
+			if (m >= limit) break;
+		}
+	}
+	return m;
+}
+
+static void _viv_merge_clamp_anchor(_viv_merge_state_t *st,int index,int *x,int *y)
+{
+	int right;
+	int bottom;
+
+	if ((index < 0) || (index >= st->count)) return;
+	right = st->frame_wide - st->pad;
+	bottom = st->frame_high - st->pad;
+	if (right < st->pad + 1) right = st->pad + 1;
+	if (bottom < st->pad + 1) bottom = st->pad + 1;
+	if (*x < st->pad) *x = st->pad;
+	if (*y < st->pad) *y = st->pad;
+	if (*x + st->wides[index] > right) *x = right - st->wides[index];
+	if (*y + st->highs[index] > bottom) *y = bottom - st->highs[index];
+	if (*x < st->pad) *x = st->pad;
+	if (*y < st->pad) *y = st->pad;
+}
+
+static void _viv_merge_reflow(_viv_merge_state_t *st,int anchor)
+{
+	int xs[VIV_MERGE_CAND_MAX];
+	int ys[VIV_MERGE_CAND_MAX];
+	int px[VIV_MERGE_MAX_IMAGES];
+	int py[VIV_MERGE_MAX_IMAGES];
+	int order[VIV_MERGE_MAX_IMAGES];
+	int nx;
+	int ny;
+	int np;
+	int n;
+	int i;
+	int j;
+	int k;
+	int p;
+	int idx;
+	int w;
+	int h;
+	int right;
+	int bottom;
+	int x;
+	int y;
+	int ok;
+	int align;
+	int pass;
+	__int64 score;
+	__int64 best;
+
+	if (!st || (st->count <= 0) || (anchor < 0) || (anchor >= st->count)) return;
+	n = st->count;
+	if ((st->frame_wide <= 0) || (st->frame_high <= 0))
+	{
+		int W0;
+		int H0;
+		if (!_viv_merge_prepare(st,&W0,&H0)) return;
+		st->frame_wide = W0;
+		st->frame_high = H0;
+	}
+	right = st->frame_wide - st->pad;
+	bottom = st->frame_high - st->pad;
+
+	x = st->free_x[anchor];
+	y = st->free_y[anchor];
+	_viv_merge_clamp_anchor(st,anchor,&x,&y);
+	px[0] = x;
+	py[0] = y;
+	order[0] = anchor;
+	np = 1;
+	for (i = 0;i < n;i++)
+	{
+		if (i != anchor) order[np++] = i;
+	}
+
+	for (idx = 1;idx < np;idx++)
+	{
+		i = order[idx];
+		w = st->wides[i];
+		h = st->highs[i];
+		nx = 0;
+		ny = 0;
+		xs[nx++] = st->pad;
+		ys[ny++] = st->pad;
+		for (j = 0;j < idx;j++)
+		{
+			int oi = order[j];
+			xs[nx++] = px[j] + st->wides[oi] + st->gap;
+			xs[nx++] = px[j]; // share a left edge -> tidy columns
+			ys[ny++] = py[j] + st->highs[oi] + st->gap;
+			ys[ny++] = py[j]; // share a top edge -> tidy rows
+		}
+		nx = _viv_merge_cand(xs,nx,VIV_MERGE_CAND_LIMIT);
+		ny = _viv_merge_cand(ys,ny,VIV_MERGE_CAND_LIMIT);
+
+		best = -1;
+		px[idx] = st->pad;
+		py[idx] = st->pad;
+		// pass 0: strictly inside the default frame
+		// pass 1: allow the canvas to grow taller
+		// pass 2: allow it to grow wider (single image wider than the frame)
+		for (pass = 0;(pass < 3) && (best < 0);pass++)
+		{
+			for (j = 0;j < ny;j++)
+			{
+				y = ys[j];
+				if (y < st->pad) continue;
+				if ((pass < 1) && (y + h > bottom)) continue;
+				for (k = 0;k < nx;k++)
+				{
+					x = xs[k];
+					if (x < st->pad) continue;
+					if ((pass < 2) && (x + w > right)) continue;
+					ok = 1;
+					for (p = 0;p < idx;p++)
+					{
+						int oi = order[p];
+						if (_viv_merge_hit(x,y,w,h,px[p],py[p],
+							st->wides[oi],st->highs[oi],st->gap))
+						{
+							ok = 0;
+							break;
+						}
+					}
+					if (!ok) continue;
+					align = 0;
+					for (p = 0;p < idx;p++)
+					{
+						if (y == py[p]) align += 2;
+						if (x == px[p]) align += 1;
+					}
+					score = (__int64)y * 1000000 + (__int64)x * 10 - (__int64)align * 5000;
+					if ((best < 0) || (score < best))
+					{
+						best = score;
+						px[idx] = x;
+						py[idx] = y;
+					}
+				}
+			}
+		}
+		if (best < 0)
+		{
+			y = st->pad;
+			for (p = 0;p < idx;p++)
+			{
+				int oi = order[p];
+				if (py[p] + st->highs[oi] + st->gap > y)
+				{
+					y = py[p] + st->highs[oi] + st->gap;
+				}
+			}
+			px[idx] = st->pad;
+			py[idx] = y;
+		}
+	}
+
+	for (j = 0;j < np;j++)
+	{
+		st->free_x[order[j]] = px[j];
+		st->free_y[order[j]] = py[j];
+	}
+	st->free_ready = 1;
+	st->free_touched = 1;
+	st->anchored = 1;
 }
 
 // Shared preview mapping. Draw code and hit testing MUST use the same numbers.
@@ -16641,6 +16929,20 @@ static LRESULT CALLBACK _viv_merge_preview_proc(HWND hwnd,UINT msg,WPARAM wParam
 					st->drag_scale = st->view_scale;
 					st->drag_cx = st->view_cx;
 					st->drag_cy = st->view_cy;
+					{
+						int W0;
+						int H0;
+						if (!_viv_merge_prepare(st,&W0,&H0)) { W0 = 1; H0 = 1; }
+						if (!st->anchored || (st->frame_wide <= 0) || (st->frame_high <= 0))
+						{
+							st->frame_wide = W0;
+							st->frame_high = H0;
+						}
+						st->drag_wide = W0;
+						st->drag_high = H0;
+					}
+					st->drag_moved = 0;
+					st->last_reflow_tick = 0;
 					SetCapture(hwnd);
 					SendMessage(GetDlgItem(GetParent(hwnd),IDC_MERGE_LIST),LB_SETCURSEL,i,0);
 					InvalidateRect(hwnd,0,FALSE);
@@ -16653,31 +16955,28 @@ static LRESULT CALLBACK _viv_merge_preview_proc(HWND hwnd,UINT msg,WPARAM wParam
 	case WM_MOUSEMOVE:
 		if (st && (st->drag_index >= 0))
 		{
-			wchar_t wbuf[STRING_SIZE];
 			int W2;
 			int H2;
+			DWORD now;
 
 			mx = (int)(short)LOWORD(lParam);
 			my = (int)(short)HIWORD(lParam);
 			px = (int)((mx - st->drag_cx) / st->drag_scale) - st->drag_off_x;
 			py = (int)((my - st->drag_cy) / st->drag_scale) - st->drag_off_y;
-			if (px < st->pad) px = st->pad;
-			if (py < st->pad) py = st->pad;
+			_viv_merge_clamp_anchor(st,st->drag_index,&px,&py);
 			st->free_x[st->drag_index] = px;
 			st->free_y[st->drag_index] = py;
-			st->item_x[st->drag_index] = px;
-			st->item_y[st->drag_index] = py;
-			st->free_touched = 1;
-			InvalidateRect(hwnd,0,FALSE);
-			if (_viv_merge_prepare(st,&W2,&H2))
+			st->drag_moved = 1;
+			// Re-pack the OTHER images so the composition stays tidy while the
+			// pointer moves. Throttled to ~20 fps; the final pass runs on mouse-up.
+			now = GetTickCount();
+			if ((st->last_reflow_tick == 0) || ((now - st->last_reflow_tick) >= 50))
 			{
-				string_printf(wbuf,"%d %s %d x %d",st->count,localization_get_string(LOCALIZATION_ID_MERGE_INFO),W2,H2);
+				_viv_merge_reflow(st,st->drag_index);
+				st->last_reflow_tick = now;
 			}
-			else
-			{
-				string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_TOO_LARGE));
-			}
-			SetDlgItemTextW(GetParent(hwnd),IDC_MERGE_INFO,wbuf);
+			_viv_merge_prepare(st,&W2,&H2); // keep item_x/y == free_x/y
+			InvalidateRect(hwnd,0,FALSE); // ONE buffered repaint per move
 			return 0;
 		}
 		break;
@@ -16685,12 +16984,24 @@ static LRESULT CALLBACK _viv_merge_preview_proc(HWND hwnd,UINT msg,WPARAM wParam
 	case WM_LBUTTONUP:
 		if (st && (st->drag_index >= 0))
 		{
+			int a = st->drag_index;
 			st->drag_index = -1;
 			ReleaseCapture();
-			InvalidateRect(hwnd,0,FALSE);
+			if (st->drag_moved)
+			{
+				_viv_merge_reflow(st,a); // final re-pack at the drop position
+				_viv_merge_info_refresh(GetParent(hwnd),st);
+			}
+			else
+			{
+				InvalidateRect(hwnd,0,FALSE);
+			}
 			return 0;
 		}
 		break;
+
+	case WM_ERASEBKGND:
+		return 1; // v8: the buffered owner draw covers the whole client area
 
 	case WM_SETCURSOR:
 		if (st && (st->layout == 6))
@@ -16759,19 +17070,16 @@ static int _viv_merge_export(_viv_merge_state_t *st,const wchar_t *out_path)
 		for (i = 0;i < st->count;i++)
 		{
 			void *image;
-			int w;
-			int h;
+			int owned;
 			int x;
 			int y;
 
-			if (!_viv_merge_load_image(st->paths[i],&image,&w,&h))
-			{
-				continue;
-			}
+			image = _viv_merge_image(st,i,&owned);
+			if (!image) continue;
 			x = st->item_x[i];
 			y = st->item_y[i];
-			os_GdipDrawImageRectI(graphics,image,x,y,w,h); // w/h = original pixels -> 1:1
-			os_GdipDisposeImage(image);
+			os_GdipDrawImageRectI(graphics,image,x,y,st->wides[i],st->highs[i]); // 1:1
+			if (owned) os_GdipDisposeImage(image);
 		}
 
 		// GDI+ requires the graphics object to be released before saving.
@@ -16831,6 +17139,7 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 	COLORREF canvas_bg;
 	COLORREF oldtext;
 	int oldmode;
+	int owned;
 
 	if (!hdc || !area || !st)
 	{
@@ -16876,6 +17185,13 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 		return;
 	}
 
+	if ((st->drag_index >= 0) && (st->drag_wide > 0) && (st->drag_high > 0))
+	{
+		// v8: freeze BOTH the mapping and the canvas rectangle while dragging.
+		// A changing background rect was the other visible source of flicker.
+		W = st->drag_wide;
+		H = st->drag_high;
+	}
 	_viv_merge_view_map(&rc,W,H,&scale,&canvas_x,&canvas_y);
 	if (st->drag_index >= 0)
 	{
@@ -16960,10 +17276,12 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 		if (dh < 1) dh = 1;
 
 		image = 0;
-		if (graphics && _viv_merge_load_image(st->paths[i],&image,&w,&h))
+		owned = 0;
+		if (graphics) image = _viv_merge_image(st,i,&owned);
+		if (graphics && image)
 		{
 			os_GdipDrawImageRectI(graphics,image,dx,dy,dw,dh);
-			os_GdipDisposeImage(image);
+			if (owned) os_GdipDisposeImage(image);
 		}
 		else
 		{
@@ -17194,6 +17512,7 @@ static void _viv_merge_move(HWND hwnd,_viv_merge_state_t *st,int delta)
 	wchar_t *tp;
 	int tw;
 	int th;
+	void *timg;
 	list = GetDlgItem(hwnd,IDC_MERGE_LIST);
 	sel = (int)SendMessage(list,LB_GETCURSEL,0,0);
 	other = sel + delta;
@@ -17204,6 +17523,7 @@ static void _viv_merge_move(HWND hwnd,_viv_merge_state_t *st,int delta)
 	tp = st->paths[sel];
 	tw = st->wides[sel];
 	th = st->highs[sel];
+	timg = st->images[sel];
 	{
 		int tx = st->free_x[sel];
 		int ty = st->free_y[sel];
@@ -17215,9 +17535,11 @@ static void _viv_merge_move(HWND hwnd,_viv_merge_state_t *st,int delta)
 	st->paths[sel] = st->paths[other];
 	st->wides[sel] = st->wides[other];
 	st->highs[sel] = st->highs[other];
+	st->images[sel] = st->images[other];
 	st->paths[other] = tp;
 	st->wides[other] = tw;
 	st->highs[other] = th;
+	st->images[other] = timg;
 	if (!st->free_touched) st->free_ready = 0;
 	_viv_merge_list_refresh(hwnd,st);
 	SendMessage(list,LB_SETCURSEL,other,0);
@@ -17235,6 +17557,13 @@ static void _viv_merge_remove(HWND hwnd,_viv_merge_state_t *st)
 	{
 		return;
 	}
+	if (st->images[sel] && os_GdipDisposeImage)
+	{
+		os_GdipDisposeImage(st->images[sel]);
+		st->cached_pixels -= (__int64)st->wides[sel] * (__int64)st->highs[sel];
+		if (st->cached_pixels < 0) st->cached_pixels = 0;
+		st->images[sel] = 0;
+	}
 	mem_free(st->paths[sel]);
 	for (i = sel;i + 1 < st->count;i++)
 	{
@@ -17243,7 +17572,9 @@ static void _viv_merge_remove(HWND hwnd,_viv_merge_state_t *st)
 		st->highs[i] = st->highs[i + 1];
 		st->free_x[i] = st->free_x[i + 1];
 		st->free_y[i] = st->free_y[i + 1];
+		st->images[i] = st->images[i + 1];
 	}
+	st->images[st->count - 1] = 0;
 	st->count--;
 	if (!st->free_touched) st->free_ready = 0;
 	if (st->selected >= st->count) st->selected = st->count - 1;
@@ -17428,10 +17759,40 @@ static INT_PTR CALLBACK _viv_merge_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 	case WM_DRAWITEM:
 	{
 		_viv_draw_item_t *dis;
+		int w;
+		int h;
+		HDC mem;
+		HBITMAP bmp;
+		HBITMAP oldbmp;
 		dis = (_viv_draw_item_t *)lParam;
 		if (dis && (dis->CtlID == IDC_MERGE_PREVIEW))
 		{
-			_viv_merge_draw_preview(dis->dc,&dis->rcItem,st);
+			// v8: double-buffered owner draw. The old code cleared the client
+			// area and then decoded/re-drew N images directly on the screen DC
+			// for EVERY WM_MOUSEMOVE, which is what made dragging flicker.
+			w = dis->rcItem.right - dis->rcItem.left;
+			h = dis->rcItem.bottom - dis->rcItem.top;
+			mem = 0;
+			bmp = 0;
+			oldbmp = 0;
+			if ((w > 0) && (h > 0))
+			{
+				mem = CreateCompatibleDC(dis->dc);
+				if (mem) bmp = CreateCompatibleBitmap(dis->dc,w,h);
+				if (mem && bmp) oldbmp = (HBITMAP)SelectObject(mem,bmp);
+			}
+			if (mem && bmp)
+			{
+				_viv_merge_draw_preview(mem,&dis->rcItem,st);
+				BitBlt(dis->dc,dis->rcItem.left,dis->rcItem.top,w,h,mem,0,0,SRCCOPY);
+				SelectObject(mem,oldbmp);
+			}
+			else
+			{
+				_viv_merge_draw_preview(dis->dc,&dis->rcItem,st);
+			}
+			if (bmp) DeleteObject(bmp);
+			if (mem) DeleteDC(mem);
 			return TRUE;
 		}
 		break;
@@ -17475,6 +17836,11 @@ static INT_PTR CALLBACK _viv_merge_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 			if (HIWORD(wParam) == CBN_SELCHANGE)
 			{
 				_viv_merge_read_params(hwnd,st);
+				if ((st->layout == 6) && st->anchored &&
+					(st->selected >= 0) && (st->selected < st->count))
+				{
+					_viv_merge_reflow(st,st->selected);
+				}
 				_viv_merge_info_refresh(hwnd,st);
 			}
 			return TRUE;
