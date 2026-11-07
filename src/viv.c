@@ -399,6 +399,19 @@ typedef struct _viv_reply_load_image_first_frame_s
 }_viv_reply_load_image_first_frame_t;
 
 // fork: owner-drawn dark menus (icon gutter, separators, checked state)
+typedef struct _viv_draw_item_s
+{
+	UINT CtlType;
+	UINT CtlID;
+	UINT itemID;
+	UINT itemAction;
+	UINT itemState;
+	HWND hwndItem;
+	HDC dc;
+	RECT rcItem;
+	ULONG_PTR itemData;
+} _viv_draw_item_t;
+
 typedef struct _viv_od_item_s
 {
 	wchar_t text[128];
@@ -4203,7 +4216,7 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 
 		case WM_DRAWITEM:
 		{
-			DRAWITEMSTRUCT *dis;
+			_viv_draw_item_t *dis;
 			_viv_od_item_t *it;
 			HBRUSH hb;
 			HPEN hp;
@@ -4217,7 +4230,7 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 			int selected;
 			int checked;
 
-			dis = (DRAWITEMSTRUCT *)lParam;
+			dis = (_viv_draw_item_t *)lParam;
 
 			if (dis->CtlType == ODT_MENU)
 			{
@@ -4239,7 +4252,7 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 				}
 
 				hb = CreateSolidBrush(bg);
-				FillRect(dis->hdc,&rc,hb);
+				FillRect(dis->dc,&rc,hb);
 				DeleteObject(hb);
 
 				if ((!it) || (it->separator))
@@ -4248,10 +4261,10 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 					if (hp)
 					{
 						HGDIOBJ oldpen;
-						oldpen = SelectObject(dis->hdc,hp);
-						MoveToEx(dis->hdc,rc.left + 8,rc.top + (rc.bottom - rc.top) / 2,0);
-						LineTo(dis->hdc,rc.right - 8,rc.top + (rc.bottom - rc.top) / 2);
-						SelectObject(dis->hdc,oldpen);
+						oldpen = SelectObject(dis->dc,hp);
+						MoveToEx(dis->dc,rc.left + 8,rc.top + (rc.bottom - rc.top) / 2,0);
+						LineTo(dis->dc,rc.right - 8,rc.top + (rc.bottom - rc.top) / 2);
+						SelectObject(dis->dc,oldpen);
 						DeleteObject(hp);
 					}
 					return TRUE;
@@ -4263,11 +4276,11 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 				ir.right = ir.left + 17;
 				ir.bottom = ir.top + 17;
 				hb = CreateSolidBrush(dark ? (selected ? RGB(52,126,146) : RGB(50,56,64)) : RGB(232,238,244));
-				FillRect(dis->hdc,&ir,hb);
+				FillRect(dis->dc,&ir,hb);
 				DeleteObject(hb);
 
-				oldfont = SelectObject(dis->hdc,(HFONT)GetStockObject(DEFAULT_GUI_FONT));
-				SetBkMode(dis->hdc,TRANSPARENT);
+				oldfont = SelectObject(dis->dc,(HFONT)GetStockObject(DEFAULT_GUI_FONT));
+				SetBkMode(dis->dc,TRANSPARENT);
 
 				// first visible glyph as a lightweight "icon"
 				if (*it->text)
@@ -4279,8 +4292,8 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 					glyph[1] = 0;
 					gr = ir;
 					gr.left += 1;
-					SetTextColor(dis->hdc,dark ? RGB(150,205,220) : RGB(60,100,120));
-					DrawTextW(dis->hdc,glyph,1,&gr,DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+					SetTextColor(dis->dc,dark ? RGB(150,205,220) : RGB(60,100,120));
+					DrawTextW(dis->dc,glyph,1,&gr,DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 				}
 
 				if (checked)
@@ -4294,11 +4307,11 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 
 						cx = rc.left + 14;
 						cy = rc.top + (rc.bottom - rc.top) / 2;
-						oldpen = SelectObject(dis->hdc,hp);
-						MoveToEx(dis->hdc,cx - 4,cy,0);
-						LineTo(dis->hdc,cx - 1,cy + 3);
-						LineTo(dis->hdc,cx + 5,cy - 4);
-						SelectObject(dis->hdc,oldpen);
+						oldpen = SelectObject(dis->dc,hp);
+						MoveToEx(dis->dc,cx - 4,cy,0);
+						LineTo(dis->dc,cx - 1,cy + 3);
+						LineTo(dis->dc,cx + 5,cy - 4);
+						SelectObject(dis->dc,oldpen);
 						DeleteObject(hp);
 					}
 				}
@@ -4306,16 +4319,16 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 				tr = rc;
 				tr.left += 32;
 				tr.right -= 10;
-				SetTextColor(dis->hdc,it->disabled ? (dark ? RGB(105,112,120) : RGB(160,160,160)) : fg);
-				DrawTextW(dis->hdc,it->text,-1,&tr,DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+				SetTextColor(dis->dc,it->disabled ? (dark ? RGB(105,112,120) : RGB(160,160,160)) : fg);
+				DrawTextW(dis->dc,it->text,-1,&tr,DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
 				if (*it->key)
 				{
 					tr = rc;
 					tr.right -= 12;
 					tr.left = tr.right - 110;
-					SetTextColor(dis->hdc,dark ? RGB(140,152,162) : RGB(110,110,110));
-					DrawTextW(dis->hdc,it->key,-1,&tr,DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+					SetTextColor(dis->dc,dark ? RGB(140,152,162) : RGB(110,110,110));
+					DrawTextW(dis->dc,it->key,-1,&tr,DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 				}
 
 				if (it->submenu)
@@ -4330,18 +4343,18 @@ debug_printf("NEXT AFTER LOAD %S\n",fd->cFileName);
 
 						x = rc.right - 10;
 						y = rc.top + (rc.bottom - rc.top) / 2;
-						oldpen = SelectObject(dis->hdc,hp);
+						oldpen = SelectObject(dis->dc,hp);
 						for(k=0;k<4;k++)
 						{
-							MoveToEx(dis->hdc,x - 4 + k,y - 4 + k,0);
-							LineTo(dis->hdc,x - 4 + k,y + 4 - k);
+							MoveToEx(dis->dc,x - 4 + k,y - 4 + k,0);
+							LineTo(dis->dc,x - 4 + k,y + 4 - k);
 						}
-						SelectObject(dis->hdc,oldpen);
+						SelectObject(dis->dc,oldpen);
 						DeleteObject(hp);
 					}
 				}
 
-				SelectObject(dis->hdc,oldfont);
+				SelectObject(dis->dc,oldfont);
 				return TRUE;
 			}
 

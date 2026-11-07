@@ -32,7 +32,7 @@ enum
 	LOCALIZATION_LANGUAGE_COUNT,
 };
 
-typedef BYTE localization_id_t;
+typedef unsigned short localization_id_t; // fork: widened, id count now exceeds 255
 
 #define LOCALIZATION_ID_INVALID 255
 
