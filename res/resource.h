@@ -102,3 +102,48 @@
 #define _APS_NEXT_SYMED_VALUE           109
 #endif
 #endif
+
+// ---------------------------------------------------------------------------
+// fork compatibility shim (2026-11-07)
+// Upstream viv.c was switched to descriptive control ids, but the matching
+// resource.h / .rc template update was never committed, so a clean checkout
+// cannot compile. Map the new names onto the existing numeric ids. Static
+// labels that never had a dedicated id get fresh unused values: the source
+// compiles and the localized SetDlgItemText calls simply become no-ops for
+// those labels instead of breaking the dialogs.
+// ---------------------------------------------------------------------------
+#ifndef _VIV_FORK_RESOURCE_ID_SHIM
+#define _VIV_FORK_RESOURCE_ID_SHIM
+
+#define IDC_ASSOCIATIONS_GROUPBOX                 IDC_STATIC
+#define IDC_ADD_KEY_BUTTON                       IDC_ADD_KEY
+#define IDC_EDIT_KEY_BUTTON                      IDC_EDIT_KEY
+#define IDC_REMOVE_KEY_BUTTON                    IDC_REMOVE_KEY
+#define IDC_AUTO_SIZE_WINDOW_COMBOBOX            IDC_COMBO4
+#define IDC_CUSTOM_RATE_TYPE_COMBOBOX            IDC_CUSTOM_RATE_TYPE_COMBO
+#define IDC_LEFTCLICKACTION_COMBOBOX             IDC_LEFTCLICKACTION
+#define IDC_RIGHTCLICKACTION_COMBOBOX            IDC_RIGHTCLICKACTION
+#define IDC_MOUSEWHEELACTION_COMBOBOX            IDC_MOUSEWHEELACTION
+#define IDC_SHRINK_BLIT_MODE_COMBOBOX            IDC_COMBO1
+#define IDC_MAGNIFY_BLIT_MODE_COMBOBOX           IDC_COMBO2
+#define IDC_TITLE_BAR_FORMAT_COMBOBOX            IDC_TITLE_BAR_FORMAT
+#define IDC_WINDOWEDBACKGROUNDCOLOR_BUTTON       IDC_WINDOWEDBACKGROUNDCOLOR
+#define IDC_FULLSCREENBACKGROUNDCOLOR_BUTTON     IDC_FULLSCREENBACKGROUNDCOLOR
+#define IDC_SEARCH_EVERYTHING_RANDOM_CHECKBOX    IDC_SEARCH_EVERYTHING_RANDOM
+#define IDC_PRELOAD_NEXT_IMAGE_STATIC            IDC_PRELOAD_NEXT_IMAGE
+#define IDC_CACHE_LAST_IMAGE_STATIC              IDC_CACHE_LAST_IMAGE
+#define IDC_LOOP_ANIMATIONS_ONCE_STATIC          IDC_LOOP_ANIMATIONS_ONCE
+
+#define IDC_COMMANDS_STATIC                      1055
+#define IDC_CUSTOM_RATE_STATIC                   1056
+#define IDC_EDIT_KEYBOARD_SHORTCUT_KEY_STATIC    1057
+#define IDC_EDIT_KEYBOARD_SHORTCUT_KEY_CURRENTLY_USED_BY_STATIC 1058
+#define IDC_FULLSCREENBACKGROUNDCOLOR_STATIC     1059
+#define IDC_LEFT_CLICK_ACTION_STATIC             1060
+#define IDC_MOUSE_WHEEL_ACTION_STATIC            1061
+#define IDC_RIGHT_CLICK_ACTION_STATIC            1062
+#define IDC_SETTINGS_FOR_SELECTED_COMMAND_STATIC 1063
+#define IDC_TITLE_BAR_FORMAT_STATIC              1064
+#define IDC_WINDOWEDBACKGROUNDCOLOR_STATIC       1065
+
+#endif // _VIV_FORK_RESOURCE_ID_SHIM
