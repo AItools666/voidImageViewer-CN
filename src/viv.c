@@ -16737,6 +16737,7 @@ static void _viv_merge_reflow(_viv_merge_state_t *st,int anchor)
 	int ok;
 	int align;
 	int pass;
+	int found;
 	__int64 score;
 	__int64 best;
 
@@ -16785,13 +16786,14 @@ static void _viv_merge_reflow(_viv_merge_state_t *st,int anchor)
 		nx = _viv_merge_cand(xs,nx,VIV_MERGE_CAND_LIMIT);
 		ny = _viv_merge_cand(ys,ny,VIV_MERGE_CAND_LIMIT);
 
-		best = -1;
+		found = 0;
+		best = 0;
 		px[idx] = st->pad;
 		py[idx] = st->pad;
 		// pass 0: strictly inside the default frame
 		// pass 1: allow the canvas to grow taller
 		// pass 2: allow it to grow wider (single image wider than the frame)
-		for (pass = 0;(pass < 3) && (best < 0);pass++)
+		for (pass = 0;(pass < 3) && (!found);pass++)
 		{
 			for (j = 0;j < ny;j++)
 			{
@@ -16822,8 +16824,9 @@ static void _viv_merge_reflow(_viv_merge_state_t *st,int anchor)
 						if (x == px[p]) align += 1;
 					}
 					score = (__int64)y * 1000000 + (__int64)x * 10 - (__int64)align * 5000;
-					if ((best < 0) || (score < best))
+					if (!found || (score < best))
 					{
+						found = 1;
 						best = score;
 						px[idx] = x;
 						py[idx] = y;
@@ -16831,7 +16834,7 @@ static void _viv_merge_reflow(_viv_merge_state_t *st,int anchor)
 				}
 			}
 		}
-		if (best < 0)
+		if (!found)
 		{
 			y = st->pad;
 			for (p = 0;p < idx;p++)
