@@ -16390,6 +16390,30 @@ static int _viv_merge_choose_cols(_viv_merge_state_t *st,int *col_w,int *row_h,i
 	return best;
 }
 
+// fork: ONE geometry routine shared by the preview and the exporter, so the
+// picture shown in the dialog is exactly the picture that gets written out.
+static void _viv_merge_item_xy(_viv_merge_state_t *st,int cols,int *col_w,int *row_h,int i,int *x,int *y)
+{
+	int c;
+	int r;
+	int k;
+
+	c = i % cols;
+	r = i / cols;
+	*x = st->pad;
+	*y = st->pad;
+	for (k = 0;k < c;k++)
+	{
+		*x += col_w[k] + st->gap;
+	}
+	for (k = 0;k < r;k++)
+	{
+		*y += row_h[k] + st->gap;
+	}
+	*x += (col_w[c] - st->wides[i]) / 2;
+	*y += (row_h[r] - st->highs[i]) / 2;
+}
+
 static int _viv_merge_export(_viv_merge_state_t *st,const wchar_t *out_path)
 {
 	int cols;
@@ -16452,30 +16476,14 @@ static int _viv_merge_export(_viv_merge_state_t *st,const wchar_t *out_path)
 			void *image;
 			int w;
 			int h;
-			int r;
-			int c;
 			int x;
 			int y;
-			int k;
 
 			if (!_viv_merge_load_image(st->paths[i],&image,&w,&h))
 			{
 				continue;
 			}
-			c = i % cols;
-			r = i / cols;
-			x = st->pad;
-			y = st->pad;
-			for (k = 0;k < c;k++)
-			{
-				x += col_w[k] + st->gap;
-			}
-			for (k = 0;k < r;k++)
-			{
-				y += row_h[k] + st->gap;
-			}
-			x += (col_w[c] - w) / 2;
-			y += (row_h[r] - h) / 2;
+			_viv_merge_item_xy(st,cols,col_w,row_h,i,&x,&y);
 			os_GdipDrawImageRectI(graphics,image,x,y,w,h); // w/h = original pixels -> 1:1
 			os_GdipDisposeImage(image);
 		}
@@ -16494,6 +16502,252 @@ static int _viv_merge_export(_viv_merge_state_t *st,const wchar_t *out_path)
 	return ok;
 }
 
+// fork: WYSIWYG preview. Same geometry, same source files, same background
+// rules as _viv_merge_export(); only the draw target is scaled down.
+static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
+{
+	int col_w[VIV_MERGE_MAX_IMAGES];
+	int row_h[VIV_MERGE_MAX_IMAGES];
+	int W;
+	int H;
+	int cols;
+	int i;
+	int x;
+	int y;
+	int w;
+	int h;
+	int dx;
+	int dy;
+	int dw;
+	int dh;
+	int avail_w;
+	int avail_h;
+	int canvas_x;
+	int canvas_y;
+	int canvas_w;
+	int canvas_h;
+	int cell_x;
+	int cell_y;
+	int cx;
+	int cy;
+	double scale;
+	RECT rc;
+	RECT tr;
+	RECT br;
+	RECT fr;
+	HBRUSH hb;
+	HBRUSH hb2;
+	HBRUSH light;
+	HBRUSH dark;
+	HFONT oldfont;
+	wchar_t num[16];
+	wchar_t hint[STRING_SIZE];
+	void *graphics;
+	void *image;
+	COLORREF canvas_bg;
+	COLORREF oldtext;
+	int oldmode;
+
+	if (!hdc || !area || !st)
+	{
+		return;
+	}
+	rc = *area;
+	oldfont = (HFONT)SelectObject(hdc,(HFONT)GetStockObject(DEFAULT_GUI_FONT));
+
+	// neutral frame, so the canvas edges are always visible
+	hb = CreateSolidBrush(RGB(238,241,243));
+	FillRect(hdc,&rc,hb);
+	DeleteObject(hb);
+
+	if (st->count <= 0)
+	{
+		string_copy_utf8_string(hint,localization_get_string(LOCALIZATION_ID_MERGE_PREVIEW_EMPTY));
+		oldtext = SetTextColor(hdc,RGB(110,120,125));
+		oldmode = SetBkMode(hdc,TRANSPARENT);
+		DrawTextW(hdc,hint,-1,&rc,DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+		SetBkMode(hdc,oldmode);
+		SetTextColor(hdc,oldtext);
+		SelectObject(hdc,oldfont);
+		return;
+	}
+
+	cols = _viv_merge_choose_cols(st,col_w,row_h,&W,&H);
+	if (cols <= 0)
+	{
+		string_copy_utf8_string(hint,localization_get_string(LOCALIZATION_ID_MERGE_TOO_LARGE));
+		oldtext = SetTextColor(hdc,RGB(170,60,60));
+		oldmode = SetBkMode(hdc,TRANSPARENT);
+		DrawTextW(hdc,hint,-1,&rc,DT_CENTER | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX);
+		SetBkMode(hdc,oldmode);
+		SetTextColor(hdc,oldtext);
+		SelectObject(hdc,oldfont);
+		return;
+	}
+
+	avail_w = (rc.right - rc.left) - 24;
+	avail_h = (rc.bottom - rc.top) - 24;
+	if ((avail_w <= 0) || (avail_h <= 0))
+	{
+		SelectObject(hdc,oldfont);
+		return;
+	}
+	scale = (double)avail_w / (double)W;
+	if (((double)avail_h / (double)H) < scale)
+	{
+		scale = (double)avail_h / (double)H;
+	}
+	if (scale > 1.0)
+	{
+		scale = 1.0;
+	}
+
+	canvas_w = (int)(W * scale);
+	canvas_h = (int)(H * scale);
+	if (canvas_w < 1) canvas_w = 1;
+	if (canvas_h < 1) canvas_h = 1;
+	canvas_x = rc.left + ((rc.right - rc.left) - canvas_w) / 2;
+	canvas_y = rc.top + ((rc.bottom - rc.top) - canvas_h) / 2;
+
+	fr.left = canvas_x;
+	fr.top = canvas_y;
+	fr.right = canvas_x + canvas_w;
+	fr.bottom = canvas_y + canvas_h;
+
+	canvas_bg = RGB(255,255,255);
+	if (st->bg == 1) canvas_bg = RGB(0,0,0);
+	if ((st->bg == 2) && (st->fmt == 1)) canvas_bg = RGB(255,255,255); // JPG falls back to white
+
+	if ((st->bg == 2) && (st->fmt != 1))
+	{
+		// transparent: checkerboard, same meaning as the exported alpha
+		light = CreateSolidBrush(RGB(246,246,246));
+		dark = CreateSolidBrush(RGB(202,202,202));
+		for (cy = fr.top;cy < fr.bottom;cy += 8)
+		{
+			for (cx = fr.left;cx < fr.right;cx += 8)
+			{
+				tr.left = cx;
+				tr.top = cy;
+				tr.right = (cx + 8 < fr.right) ? cx + 8 : fr.right;
+				tr.bottom = (cy + 8 < fr.bottom) ? cy + 8 : fr.bottom;
+				FillRect(hdc,&tr,(((cx - fr.left) / 8 + (cy - fr.top) / 8) & 1) ? dark : light);
+			}
+		}
+		DeleteObject(light);
+		DeleteObject(dark);
+	}
+	else
+	{
+		hb = CreateSolidBrush(canvas_bg);
+		FillRect(hdc,&fr,hb);
+		DeleteObject(hb);
+	}
+	hb2 = CreateSolidBrush(RGB(150,158,162));
+	FrameRect(hdc,&fr,hb2);
+	DeleteObject(hb2);
+
+	// pass 1: real thumbnails via the system gdiplus.dll (HDC graphics).
+	// GDI+ gets the HDC first; all plain-GDI decoration happens after release.
+	graphics = 0;
+	if (os_GdipCreateFromHDC && os_GdipDrawImageRectI && os_GdipDeleteGraphics)
+	{
+		if (os_GdipCreateFromHDC(hdc,&graphics) != 0 || (!graphics))
+		{
+			graphics = 0;
+		}
+		else
+		{
+			if (os_GdipSetInterpolationMode) os_GdipSetInterpolationMode(graphics,7); // HighQualityBicubic
+			if (os_GdipSetPixelOffsetMode) os_GdipSetPixelOffsetMode(graphics,2);
+			if (os_GdipSetSmoothingMode) os_GdipSetSmoothingMode(graphics,2);
+		}
+	}
+
+	for (i = 0;i < st->count;i++)
+	{
+		_viv_merge_item_xy(st,cols,col_w,row_h,i,&x,&y);
+		w = st->wides[i];
+		h = st->highs[i];
+		dx = canvas_x + (int)(x * scale);
+		dy = canvas_y + (int)(y * scale);
+		dw = (int)(w * scale);
+		dh = (int)(h * scale);
+		if (dw < 1) dw = 1;
+		if (dh < 1) dh = 1;
+
+		image = 0;
+		if (graphics && _viv_merge_load_image(st->paths[i],&image,&w,&h))
+		{
+			os_GdipDrawImageRectI(graphics,image,dx,dy,dw,dh);
+			os_GdipDisposeImage(image);
+		}
+		else
+		{
+			tr.left = dx;
+			tr.top = dy;
+			tr.right = dx + dw;
+			tr.bottom = dy + dh;
+			hb = CreateSolidBrush(RGB(196,204,208));
+			FillRect(hdc,&tr,hb);
+			DeleteObject(hb);
+		}
+	}
+	if (graphics)
+	{
+		os_GdipDeleteGraphics(graphics);
+	}
+
+	// pass 2: cell outlines + order badges make up/down/left/right explicit.
+	for (i = 0;i < st->count;i++)
+	{
+		int c;
+		int r;
+		int k;
+
+		c = i % cols;
+		r = i / cols;
+		cell_x = st->pad;
+		cell_y = st->pad;
+		for (k = 0;k < c;k++) cell_x += col_w[k] + st->gap;
+		for (k = 0;k < r;k++) cell_y += row_h[k] + st->gap;
+		cx = canvas_x + (int)(cell_x * scale);
+		cy = canvas_y + (int)(cell_y * scale);
+		dw = (int)(col_w[c] * scale);
+		dh = (int)(row_h[r] * scale);
+		if (dw < 1) dw = 1;
+		if (dh < 1) dh = 1;
+
+		tr.left = cx;
+		tr.top = cy;
+		tr.right = cx + dw;
+		tr.bottom = cy + dh;
+		hb = CreateSolidBrush(RGB(120,132,138));
+		FrameRect(hdc,&tr,hb);
+		DeleteObject(hb);
+
+		_viv_merge_item_xy(st,cols,col_w,row_h,i,&x,&y);
+		dx = canvas_x + (int)(x * scale);
+		dy = canvas_y + (int)(y * scale);
+
+		br.left = dx + 2;
+		br.top = dy + 2;
+		br.right = br.left + 18;
+		br.bottom = br.top + 15;
+		hb = CreateSolidBrush(RGB(16,137,129));
+		FillRect(hdc,&br,hb);
+		DeleteObject(hb);
+		string_printf(num,"%d",i + 1);
+		oldtext = SetTextColor(hdc,RGB(255,255,255));
+		oldmode = SetBkMode(hdc,TRANSPARENT);
+		DrawTextW(hdc,num,-1,&br,DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+		SetBkMode(hdc,oldmode);
+		SetTextColor(hdc,oldtext);
+	}
+
+	SelectObject(hdc,oldfont);
+}
+
 static void _viv_merge_combo_init(HWND hwnd,int id,int count,int first_id,int selected)
 {
 	HWND combo;
@@ -16506,6 +16760,17 @@ static void _viv_merge_combo_init(HWND hwnd,int id,int count,int first_id,int se
 		SendMessage(combo,CB_ADDSTRING,0,(LPARAM)wbuf);
 	}
 	SendMessage(combo,CB_SETCURSEL,selected,0);
+}
+
+// fork: any state change repaints the preview.
+static void _viv_merge_preview_refresh(HWND hwnd)
+{
+	HWND p;
+	p = GetDlgItem(hwnd,IDC_MERGE_PREVIEW);
+	if (p)
+	{
+		InvalidateRect(p,0,FALSE);
+	}
 }
 
 static void _viv_merge_list_refresh(HWND hwnd,_viv_merge_state_t *st)
@@ -16546,6 +16811,7 @@ static void _viv_merge_info_refresh(HWND hwnd,_viv_merge_state_t *st)
 		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_TOO_LARGE));
 	}
 	SetDlgItemTextW(hwnd,IDC_MERGE_INFO,wbuf);
+	_viv_merge_preview_refresh(hwnd); // fork: preview == export, keep in sync
 }
 
 static void _viv_merge_read_params(HWND hwnd,_viv_merge_state_t *st)
@@ -16762,6 +17028,10 @@ static INT_PTR CALLBACK _viv_merge_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 		SetDlgItemTextW(hwnd,IDOK,wbuf);
 		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_CANCEL));
 		SetDlgItemTextW(hwnd,IDCANCEL,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_PREVIEW_LABEL));
+		SetDlgItemTextW(hwnd,IDC_MERGE_PREVIEW_LABEL,wbuf);
+		string_copy_utf8_string(wbuf,localization_get_string(LOCALIZATION_ID_MERGE_PREVIEW_HINT));
+		SetDlgItemTextW(hwnd,IDC_MERGE_PREVIEW_HINT,wbuf);
 
 		_viv_merge_combo_init(hwnd,IDC_MERGE_LAYOUT,6,LOCALIZATION_ID_MERGE_LAYOUT_AUTO,st->layout);
 		_viv_merge_combo_init(hwnd,IDC_MERGE_BG,3,LOCALIZATION_ID_MERGE_BG_WHITE,st->bg);
@@ -16789,6 +17059,18 @@ static INT_PTR CALLBACK _viv_merge_proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM 
 		_viv_merge_list_refresh(hwnd,st);
 		_viv_merge_info_refresh(hwnd,st);
 		return TRUE;
+
+	case WM_DRAWITEM:
+	{
+		_viv_draw_item_t *dis;
+		dis = (_viv_draw_item_t *)lParam;
+		if (dis && (dis->CtlID == IDC_MERGE_PREVIEW))
+		{
+			_viv_merge_draw_preview(dis->dc,&dis->rcItem,st);
+			return TRUE;
+		}
+		break;
+	}
 
 	case WM_COMMAND:
 		switch (LOWORD(wParam))

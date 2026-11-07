@@ -349,4 +349,7 @@ static const utf8_t *_localization_string_array_zh_cn[LOCALIZATION_ID_COUNT] =
 	"张图片已合并，输出尺寸：", // LOCALIZATION_ID_MERGE_DONE,
 	"合并失败：图片无法读取，或目标文件无法写入。", // LOCALIZATION_ID_MERGE_FAIL,
 	"合并后的尺寸过大（单边超过 30000 像素），请减少图片数量。", // LOCALIZATION_ID_MERGE_TOO_LARGE,
+	"合并预览（与导出结果一致）：", // LOCALIZATION_ID_MERGE_PREVIEW_LABEL,
+	"添加 2 张及以上图片后，这里会显示实际合并效果", // LOCALIZATION_ID_MERGE_PREVIEW_EMPTY,
+	"编号表示图片顺序，可用上移 / 下移调整；改布局、间距、边距、背景会立即刷新。", // LOCALIZATION_ID_MERGE_PREVIEW_HINT,
 };

@@ -109,6 +109,9 @@
 #define IDC_MERGE_PAD_LABEL             1113
 #define IDC_MERGE_BG_LABEL              1114
 #define IDC_MERGE_FMT_LABEL             1115
+#define IDC_MERGE_PREVIEW               1120
+#define IDC_MERGE_PREVIEW_LABEL         1121
+#define IDC_MERGE_PREVIEW_HINT          1122
 
 // Next default values for new objects
 // 
