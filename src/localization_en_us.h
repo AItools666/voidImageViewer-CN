@@ -28,7 +28,7 @@ static const utf8_t *_localization_string_array_en_us[LOCALIZATION_ID_COUNT] =
 	"English (US)", // LOCALIZATION_ID_LANGUAGE
 	
 	// Application name
-	"void Image Viewer", // LOCALIZATION_ID_APP_NAME
+	"void图片查看器", // LOCALIZATION_ID_APP_NAME
 
 	// File menu
 	"&File", // LOCALIZATION_ID_FILE,
@@ -206,7 +206,7 @@ static const utf8_t *_localization_string_array_en_us[LOCALIZATION_ID_COUNT] =
 	"milliseconds", // LOCALIZATION_ID_STATUS_BAR_MILLISECONDS,
 
 	// Dialog strings
-	"Options - void Image Viewer", // LOCALIZATION_ID_OPTIONS_CAPTION,
+	"Options - void图片查看器", // LOCALIZATION_ID_OPTIONS_CAPTION,
 	"General", // LOCALIZATION_ID_OPTIONS_GENERAL_DIALOG,
 	"View", // LOCALIZATION_ID_OPTIONS_VIEW_DIALOG,
 	"Controls", // LOCALIZATION_ID_OPTIONS_CONTROLS_DIALOG,
@@ -250,7 +250,7 @@ static const utf8_t *_localization_string_array_en_us[LOCALIZATION_ID_COUNT] =
 	"minutes", // LOCALIZATION_ID_CUSTOM_RATE_MINUTES,
 	"seconds", // LOCALIZATION_ID_CUSTOM_RATE_SECONDS,
 	"milliseconds", // LOCALIZATION_ID_CUSTOM_RATE_MILLISECONDS,
-	"About void Image Viewer", // LOCALIZATION_ID_ABOUT_CAPTION,
+	"About void图片查看器", // LOCALIZATION_ID_ABOUT_CAPTION,
 	"Rename", // LOCALIZATION_ID_RENAME_CAPTION,
 	"Jump To", // LOCALIZATION_ID_JUMP_TO_TITLE,
 	"Search Everything", // LOCALIZATION_ID_SEARCH_EVERYTHING,
@@ -304,7 +304,7 @@ static const utf8_t *_localization_string_array_en_us[LOCALIZATION_ID_COUNT] =
 	"&Language", // LOCALIZATION_ID_LANGUAGE_MENU,
 	"&English", // LOCALIZATION_ID_LANGUAGE_ENGLISH,
 	"&Chinese (Simplified)", // LOCALIZATION_ID_LANGUAGE_CHINESE,
-	"Language saved. Restart void Image Viewer to fully apply.", // LOCALIZATION_ID_LANGUAGE_RESTART_NOTICE,
+	"Language saved. Restart void图片查看器 to fully apply.", // LOCALIZATION_ID_LANGUAGE_RESTART_NOTICE,
 
 	// UX pack (fork)
 	"&Dark Theme", // LOCALIZATION_ID_VIEW_DARK_THEME,

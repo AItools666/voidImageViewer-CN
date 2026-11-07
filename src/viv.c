@@ -882,7 +882,6 @@ static _viv_command_t _viv_commands[] =
 	{LOCALIZATION_ID_STATUS_BAR,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_STATUS},
 	{LOCALIZATION_ID_CONTROLS,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_CONTROLS},
 	{LOCALIZATION_ID_INVALID,MF_SEPARATOR,_VIV_MENU_VIEW,0},
-	{LOCALIZATION_ID_VIEW_DARK_THEME,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_DARK_THEME}, // fork
 	{LOCALIZATION_ID_VIEW_FILE_PROGRESS,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_FILE_PROGRESS}, // fork
 	{LOCALIZATION_ID_VIEW_MODIFIED_TIME,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_MODIFIED_TIME}, // fork
 	{LOCALIZATION_ID_VIEW_ESCAPE_CLOSES,MF_STRING,_VIV_MENU_VIEW,VIV_ID_VIEW_ESCAPE_CLOSES}, // fork
@@ -2551,10 +2550,9 @@ debug_printf("SWP %d %d %d %d\n",rect.left,rect.top,rect.right - rect.left,rect.
 			break;
 			
 				case VIV_ID_VIEW_DARK_THEME:
-			config_dark_theme = !config_dark_theme;
+			config_dark_theme = 0; // fork: dark theme retired
 			config_save_settings(config_appdata);
 			_viv_apply_dark_theme();
-			_viv_menu_ownerdraw_apply_main(_viv_hmenu);
 			break;
 
 		case VIV_ID_VIEW_FILE_PROGRESS:
@@ -13437,7 +13435,7 @@ static int _viv_is_start_menu_shortcuts(void)
 	// delete shortcuts
 	if (os_get_special_folder_path(special_folder_path_wbuf,CSIDL_COMMON_PROGRAMS))
 	{
-		string_path_combine_utf8(path_wbuf,special_folder_path_wbuf,(const utf8_t *)"void Image Viewer");
+		string_path_combine_utf8(path_wbuf,special_folder_path_wbuf,(const utf8_t *)"void图片查看器");
 
 		// make sure this directory exists!		
 		if (GetFileAttributesW(path_wbuf) != INVALID_FILE_ATTRIBUTES)
@@ -13467,14 +13465,14 @@ static void _viv_install_start_menu_shortcuts(void)
 		wchar_t uninstall_filename_wbuf[STRING_SIZE];
 		wchar_t lnk_wbuf[STRING_SIZE];
 		
-		string_path_combine_utf8(path_wbuf,special_folder_path_wbuf,(const utf8_t *)"void Image Viewer");
+		string_path_combine_utf8(path_wbuf,special_folder_path_wbuf,(const utf8_t *)"void图片查看器");
 
 		// make sure this directory exists!		
 		os_make_sure_path_exists(path_wbuf);
 
 		// void image viewer.lnk
 		_viv_get_exe_filename(exe_filename_wbuf);
-		string_path_combine_utf8(lnk_wbuf,path_wbuf,"void Image Viewer.lnk");
+		string_path_combine_utf8(lnk_wbuf,path_wbuf,"void图片查看器.lnk");
 		os_create_shell_link(exe_filename_wbuf,lnk_wbuf);
 	
 		// uninstall
@@ -13497,10 +13495,10 @@ static void _viv_uninstall_start_menu_shortcuts(void)
 	{
 		wchar_t lnk_wbuf[STRING_SIZE];
 
-		string_path_combine_utf8(path_wbuf,special_folder_path_wbuf,(const utf8_t *)"void Image Viewer");
+		string_path_combine_utf8(path_wbuf,special_folder_path_wbuf,(const utf8_t *)"void图片查看器");
 		
 		// localized.
-		string_path_combine_utf8(lnk_wbuf,path_wbuf,"void Image Viewer.lnk");
+		string_path_combine_utf8(lnk_wbuf,path_wbuf,"void图片查看器.lnk");
 		DeleteFile(lnk_wbuf);
 		
 		string_path_combine_utf8(lnk_wbuf,path_wbuf,"Uninstall.lnk");

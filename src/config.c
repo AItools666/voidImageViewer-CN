@@ -169,7 +169,9 @@ static void _config_load_settings_by_location(const wchar_t *path,int is_root)
 		config_title_bar_format = ini_get_int(ini,(const utf8_t *)"title_bar_format",config_title_bar_format);
 		config_add_command_line_timeout = ini_get_int(ini,(const utf8_t *)"add_command_line_timeout",config_add_command_line_timeout);
 		config_language = ini_get_int(ini,(const utf8_t *)"language",config_language); // fork
-		config_dark_theme = ini_get_int(ini,(const utf8_t *)"dark_theme",config_dark_theme); // fork
+		// fork: dark theme retired - owner-drawn menus erased every item text (pure black popup).
+		// Always use classic system-drawn menus; ignore any stale dark_theme ini value.
+		config_dark_theme = 0;
 		config_show_file_progress = ini_get_int(ini,(const utf8_t *)"show_file_progress",config_show_file_progress); // fork
 		config_show_modified_time = ini_get_int(ini,(const utf8_t *)"show_modified_time",config_show_modified_time); // fork
 		config_escape_closes = ini_get_int(ini,(const utf8_t *)"escape_closes",config_escape_closes); // fork
