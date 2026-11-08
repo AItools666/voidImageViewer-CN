@@ -16067,6 +16067,10 @@ static int _viv_safe_copy_data(const void *base,SIZE_T src_size,const void *src,
 #define VIV_MERGE_MAX_DIM 30000
 #define VIV_MERGE_PIXEL_FORMAT_32ARGB 0x26200A
 #define VIV_MERGE_INTERPOLATION_NEARESTNEIGHBOR 5
+#define VIV_MERGE_INTERPOLATION_HIGHQUALITYBICUBIC 7
+// v10 "clarity first": a small image may grow to close a gap, but NEVER more
+// than this factor and NEVER shrunk. The widest image in each column stays 1:1.
+#define VIV_MERGE_MAX_UPSCALE 1.5
 // v8: keep decoded source bitmaps instead of re-reading/re-decoding them on
 // every mouse-move repaint. 48 Mpix ~= 192 MB worst case; above that we fall
 // back to one-shot loading, so 64 huge images can never exhaust memory.
@@ -16082,6 +16086,12 @@ typedef struct _viv_merge_state_s
 	wchar_t *paths[VIV_MERGE_MAX_IMAGES];
 	int wides[VIV_MERGE_MAX_IMAGES];
 	int highs[VIV_MERGE_MAX_IMAGES];
+	// v10: effective draw size in canvas pixels (== wides/highs when 1:1).
+	// Preview, hit testing and export ALL read these, so scaling is WYSIWYG.
+	int draw_w[VIV_MERGE_MAX_IMAGES];
+	int draw_h[VIV_MERGE_MAX_IMAGES];
+	int col_wide[2]; // final width/height of the landscape / portrait column
+	int col_high[2];
 	int count;
 	int layout; // 0=auto 1=row 2=column 3=2col 4=3col 5=4col 6=free (draggable)
 	int gap;
@@ -16243,6 +16253,8 @@ static void _viv_merge_add_file(_viv_merge_state_t *st,const wchar_t *path)
 		st->paths[st->count] = string_alloc(path);
 		st->wides[st->count] = w;
 		st->highs[st->count] = h;
+		st->draw_w[st->count] = w;
+		st->draw_h[st->count] = h;
 		if ((st->cached_pixels + (__int64)w * (__int64)h) <= VIV_MERGE_CACHE_BUDGET)
 		{
 			st->images[st->count] = image; // keep decoded, reused by preview + export
@@ -16510,8 +16522,9 @@ static void _viv_merge_item_xy(_viv_merge_state_t *st,int cols,int *col_w,int *r
 // fork: free-form layout.
 // st->item_x / item_y hold the canvas position of every image. The preview and
 // the exporter both read them, so dragging a thumbnail in the preview changes
-// exactly what is written out. Every image is still blitted at its ORIGINAL
-// pixel size, so the merge stays lossless 1:1 (no resampling at all).
+// exactly what is written out. v10: draw_w/draw_h are the effective canvas
+// sizes. Large (reference) images stay 1:1 with zero resampling; only small
+// images are scaled UP to close a gap, never shrunk (clarity first).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -16522,6 +16535,148 @@ static void _viv_merge_item_xy(_viv_merge_state_t *st,int cols,int *col_w,int *r
 // that group; every other image of the same shape automatically joins it.
 // No overlap, no ragged gaps, and the canvas no longer grows with the drop.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// v10: "clarity first" zoom. Pure function of wides/highs/gap - safe to call
+// on every repaint, so add/remove/move never need to keep extra state in sync.
+//
+//  * group by shape (landscape/square vs portrait), exactly like v9;
+//  * pass 1: each small image grows towards the width of its own column.
+//    The widest image is the reference and stays 1:1 (no resampling at all);
+//  * pass 2: the shorter column gets ONE uniform upscale so both columns
+//    finish at the same height instead of leaving a big vertical gap;
+//  * every factor is >= 1.0 (nothing is ever shrunk) and <= 1.5. Past that
+//    limit a small symmetric gap is preferable to a blurry enlarged photo.
+// ---------------------------------------------------------------------------
+static void _viv_merge_zoom(_viv_merge_state_t *st)
+{
+	int group[VIV_MERGE_MAX_IMAGES];
+	int list0[VIV_MERGE_MAX_IMAGES];
+	int list1[VIV_MERGE_MAX_IMAGES];
+	int n0;
+	int n1;
+	int w0;
+	int w1;
+	int h0;
+	int h1;
+	int hshort;
+	int htall;
+	int nshort;
+	int i;
+	int j;
+	int g;
+	int tall;
+	int short_g;
+	int dw;
+	int dh;
+	int ref;
+	double s[VIV_MERGE_MAX_IMAGES];
+	double max_s0;
+	double max_s1;
+	double m;
+	double k;
+
+	if (!st || (st->count <= 0)) return;
+	n0 = 0;
+	n1 = 0;
+	w0 = 0;
+	w1 = 0;
+	max_s0 = 1.0;
+	max_s1 = 1.0;
+	for (i = 0;i < st->count;i++)
+	{
+		group[i] = (st->highs[i] > st->wides[i]) ? 1 : 0;
+		if (group[i])
+		{
+			list1[n1++] = i;
+			if (st->wides[i] > w1) w1 = st->wides[i];
+		}
+		else
+		{
+			list0[n0++] = i;
+			if (st->wides[i] > w0) w0 = st->wides[i];
+		}
+	}
+
+	// pass 1: grow small images towards their column width
+	for (i = 0;i < st->count;i++)
+	{
+		ref = group[i] ? w1 : w0;
+		s[i] = 1.0;
+		if ((ref > 0) && (st->wides[i] > 0))
+		{
+			s[i] = (double)ref / (double)st->wides[i];
+			if (s[i] < 1.0) s[i] = 1.0;
+			if (s[i] > VIV_MERGE_MAX_UPSCALE) s[i] = VIV_MERGE_MAX_UPSCALE;
+		}
+		if (group[i])
+		{
+			if (s[i] > max_s1) max_s1 = s[i];
+		}
+		else
+		{
+			if (s[i] > max_s0) max_s0 = s[i];
+		}
+	}
+
+	// measure both columns with the pass-1 sizes
+	h0 = 0;
+	h1 = 0;
+	for (j = 0;j < n0;j++)
+	{
+		i = list0[j];
+		h0 += (int)(st->highs[i] * s[i] + 0.5);
+	}
+	if (n0 > 1) h0 += st->gap * (n0 - 1);
+	for (j = 0;j < n1;j++)
+	{
+		i = list1[j];
+		h1 += (int)(st->highs[i] * s[i] + 0.5);
+	}
+	if (n1 > 1) h1 += st->gap * (n1 - 1);
+
+	// pass 2: lift the shorter column to the taller one, uniformly
+	tall = (h0 >= h1) ? 0 : 1;
+	short_g = 1 - tall;
+	hshort = short_g ? h1 : h0;
+	htall = short_g ? h0 : h1;
+	nshort = short_g ? n1 : n0;
+	m = short_g ? max_s1 : max_s0;
+	if ((nshort > 0) && (hshort > 0) && (htall > hshort) && (m > 0.0))
+	{
+		k = (double)htall / (double)hshort;
+		if (k > VIV_MERGE_MAX_UPSCALE / m) k = VIV_MERGE_MAX_UPSCALE / m;
+		if (k > 1.001)
+		{
+			for (j = 0;j < nshort;j++)
+			{
+				i = short_g ? list1[j] : list0[j];
+				s[i] *= k;
+				if (s[i] > VIV_MERGE_MAX_UPSCALE) s[i] = VIV_MERGE_MAX_UPSCALE;
+			}
+		}
+	}
+
+	// final draw sizes and column metrics
+	st->col_wide[0] = 0;
+	st->col_wide[1] = 0;
+	st->col_high[0] = 0;
+	st->col_high[1] = 0;
+	for (i = 0;i < st->count;i++)
+	{
+		dw = (int)(st->wides[i] * s[i] + 0.5);
+		dh = (int)(st->highs[i] * s[i] + 0.5);
+		if (dw < 1) dw = 1;
+		if (dh < 1) dh = 1;
+		g = group[i];
+		st->draw_w[i] = dw;
+		st->draw_h[i] = dh;
+		if (dw > st->col_wide[g]) st->col_wide[g] = dw;
+		st->col_high[g] += dh;
+	}
+	if (n0 > 1) st->col_high[0] += st->gap * (n0 - 1);
+	if (n1 > 1) st->col_high[1] += st->gap * (n1 - 1);
+}
+
 static void _viv_merge_group_layout(_viv_merge_state_t *st,int anchor,int ax,int ay)
 {
 	int group[VIV_MERGE_MAX_IMAGES];
@@ -16548,6 +16703,7 @@ static void _viv_merge_group_layout(_viv_merge_state_t *st,int anchor,int ax,int
 	int W;
 	int H;
 
+	_viv_merge_zoom(st); // v10: draw sizes / column metrics for this set
 	n0 = 0;
 	n1 = 0;
 	for (i = 0;i < st->count;i++)
@@ -16568,7 +16724,7 @@ static void _viv_merge_group_layout(_viv_merge_state_t *st,int anchor,int ax,int
 	if ((anchor >= 0) && (anchor < st->count) && (n0 > 0) && (n1 > 0))
 	{
 		ag = group[anchor];
-		left = ((ax + st->wides[anchor] / 2) > half_w) ? (1 - ag) : ag;
+		left = ((ax + st->draw_w[anchor] / 2) > half_w) ? (1 - ag) : ag;
 	}
 
 	// Inside its group the dragged image goes to the top (upper half) or the
@@ -16599,24 +16755,11 @@ static void _viv_merge_group_layout(_viv_merge_state_t *st,int anchor,int ax,int
 		}
 	}
 
-	w0 = 0;
-	h0 = 0;
-	for (j = 0;j < n0;j++)
-	{
-		i = list0[j];
-		if (st->wides[i] > w0) w0 = st->wides[i];
-		h0 += st->highs[i];
-	}
-	if (n0 > 1) h0 += st->gap * (n0 - 1);
-	w1 = 0;
-	h1 = 0;
-	for (j = 0;j < n1;j++)
-	{
-		i = list1[j];
-		if (st->wides[i] > w1) w1 = st->wides[i];
-		h1 += st->highs[i];
-	}
-	if (n1 > 1) h1 += st->gap * (n1 - 1);
+	// v10: column metrics use the ENLARGED draw sizes, not the source sizes.
+	w0 = (n0 > 0) ? st->col_wide[0] : 0;
+	h0 = (n0 > 0) ? st->col_high[0] : 0;
+	w1 = (n1 > 0) ? st->col_wide[1] : 0;
+	h1 = (n1 > 0) ? st->col_high[1] : 0;
 
 	H = ((h0 > h1) ? h0 : h1) + st->pad * 2;
 	W = st->pad * 2 + w0 + w1;
@@ -16643,9 +16786,9 @@ static void _viv_merge_group_layout(_viv_merge_state_t *st,int anchor,int ax,int
 			for (j = 0;j < n;j++)
 			{
 				i = lst[j];
-				st->free_x[i] = col_x + (cw - st->wides[i]) / 2;
+				st->free_x[i] = col_x + (cw - st->draw_w[i]) / 2;
 				st->free_y[i] = col_y;
-				col_y += st->highs[i] + st->gap;
+				col_y += st->draw_h[i] + st->gap;
 			}
 			offset = lw + st->gap;
 		}
@@ -16684,14 +16827,15 @@ static int _viv_merge_prepare(_viv_merge_state_t *st,int *out_wide,int *out_high
 		{
 			_viv_merge_compact(st);
 		}
+		_viv_merge_zoom(st); // pure: valid after add/remove/move too
 		W = st->pad;
 		H = st->pad;
 		for (i = 0;i < st->count;i++)
 		{
 			st->item_x[i] = st->free_x[i];
 			st->item_y[i] = st->free_y[i];
-			if (st->free_x[i] + st->wides[i] > W) W = st->free_x[i] + st->wides[i];
-			if (st->free_y[i] + st->highs[i] > H) H = st->free_y[i] + st->highs[i];
+			if (st->free_x[i] + st->draw_w[i] > W) W = st->free_x[i] + st->draw_w[i];
+			if (st->free_y[i] + st->draw_h[i] > H) H = st->free_y[i] + st->draw_h[i];
 		}
 		W += st->pad;
 		H += st->pad;
@@ -16706,6 +16850,12 @@ static int _viv_merge_prepare(_viv_merge_state_t *st,int *out_wide,int *out_high
 	}
 	else
 	{
+		// v10: only the free layout scales. Every grid layout stays 1:1.
+		for (i = 0;i < st->count;i++)
+		{
+			st->draw_w[i] = st->wides[i];
+			st->draw_h[i] = st->highs[i];
+		}
 		cols = _viv_merge_choose_cols(st,col_w,row_h,&W,&H);
 		if (cols <= 0)
 		{
@@ -16739,8 +16889,8 @@ static void _viv_merge_clamp_anchor(_viv_merge_state_t *st,int index,int *x,int 
 	if (bottom < st->pad + 1) bottom = st->pad + 1;
 	if (*x < st->pad) *x = st->pad;
 	if (*y < st->pad) *y = st->pad;
-	if (*x + st->wides[index] > right) *x = right - st->wides[index];
-	if (*y + st->highs[index] > bottom) *y = bottom - st->highs[index];
+	if (*x + st->draw_w[index] > right) *x = right - st->draw_w[index];
+	if (*y + st->draw_h[index] > bottom) *y = bottom - st->draw_h[index];
 	if (*x < st->pad) *x = st->pad;
 	if (*y < st->pad) *y = st->pad;
 }
@@ -16821,8 +16971,8 @@ static LRESULT CALLBACK _viv_merge_preview_proc(HWND hwnd,UINT msg,WPARAM wParam
 			py = (int)((my - st->view_cy) / st->view_scale);
 			for (i = st->count - 1;i >= 0;i--) // topmost first
 			{
-				if ((px >= st->item_x[i]) && (px < st->item_x[i] + st->wides[i]) &&
-					(py >= st->item_y[i]) && (py < st->item_y[i] + st->highs[i]))
+				if ((px >= st->item_x[i]) && (px < st->item_x[i] + st->draw_w[i]) &&
+					(py >= st->item_y[i]) && (py < st->item_y[i] + st->draw_h[i]))
 				{
 					st->drag_index = i;
 					st->drag_off_x = px - st->item_x[i];
@@ -16972,7 +17122,16 @@ static int _viv_merge_export(_viv_merge_state_t *st,const wchar_t *out_path)
 			if (!image) continue;
 			x = st->item_x[i];
 			y = st->item_y[i];
-			os_GdipDrawImageRectI(graphics,image,x,y,st->wides[i],st->highs[i]); // 1:1
+			// v10: an untouched image is copied pixel-exact (nearest neighbour);
+			// an enlarged small image uses high quality bicubic interpolation.
+			if (os_GdipSetInterpolationMode)
+			{
+				int untouched = ((st->draw_w[i] == st->wides[i]) && (st->draw_h[i] == st->highs[i]));
+				os_GdipSetInterpolationMode(graphics,untouched ?
+					VIV_MERGE_INTERPOLATION_NEARESTNEIGHBOR :
+					VIV_MERGE_INTERPOLATION_HIGHQUALITYBICUBIC);
+			}
+			os_GdipDrawImageRectI(graphics,image,x,y,st->draw_w[i],st->draw_h[i]);
 			if (owned) os_GdipDisposeImage(image);
 		}
 
@@ -17160,8 +17319,8 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 	{
 		x = st->item_x[i];
 		y = st->item_y[i];
-		w = st->wides[i];
-		h = st->highs[i];
+		w = st->draw_w[i];
+		h = st->draw_h[i];
 		dx = canvas_x + (int)(x * scale);
 		dy = canvas_y + (int)(y * scale);
 		dw = (int)(w * scale);
@@ -17206,8 +17365,8 @@ static void _viv_merge_draw_preview(HDC hdc,RECT *area,_viv_merge_state_t *st)
 		{
 			dx = canvas_x + (int)(st->item_x[i] * scale);
 			dy = canvas_y + (int)(st->item_y[i] * scale);
-			dw = (int)(st->wides[i] * scale);
-			dh = (int)(st->highs[i] * scale);
+			dw = (int)(st->draw_w[i] * scale);
+			dh = (int)(st->draw_h[i] * scale);
 		}
 		else
 		{

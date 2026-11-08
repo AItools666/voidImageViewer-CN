@@ -341,7 +341,7 @@ static const utf8_t *_localization_string_array_en_us[LOCALIZATION_ID_COUNT] =
 	"PNG", // LOCALIZATION_ID_MERGE_FMT_PNG,
 	"JPG", // LOCALIZATION_ID_MERGE_FMT_JPG,
 	"images, output size:", // LOCALIZATION_ID_MERGE_INFO,
-	"No images yet. Click Add Images and pick 2 or more; sources stay 1:1.", // LOCALIZATION_ID_MERGE_INFO_EMPTY,
+	"No images yet. Click Add Images and pick 2 or more; small images grow to fill gaps, large ones stay 1:1.", // LOCALIZATION_ID_MERGE_INFO_EMPTY,
 	"Please add at least 2 images before exporting.", // LOCALIZATION_ID_MERGE_NEED_TWO,
 	"Select images to merge (multiple selection)", // LOCALIZATION_ID_MERGE_OPEN_CAPTION,
 	"Save merged image", // LOCALIZATION_ID_MERGE_SAVE_CAPTION,
@@ -350,7 +350,7 @@ static const utf8_t *_localization_string_array_en_us[LOCALIZATION_ID_COUNT] =
 	"Output is too large (over 30000 px per side). Use fewer images.", // LOCALIZATION_ID_MERGE_TOO_LARGE,
 	"Merge preview (matches the exported image):", // LOCALIZATION_ID_MERGE_PREVIEW_LABEL,
 	"Add 2 or more images to preview the result", // LOCALIZATION_ID_MERGE_PREVIEW_EMPTY,
-	"Numbers show order. After a drag, landscape and portrait images group into columns, no overlap.", // LOCALIZATION_ID_MERGE_PREVIEW_HINT,
+	"Numbers show order. Landscape and portrait images form columns; small ones scale up to close gaps (max 1.5x), large ones stay 1:1.", // LOCALIZATION_ID_MERGE_PREVIEW_HINT,
 	"Free layout (drag)", // LOCALIZATION_ID_MERGE_LAYOUT_FREE,
 	"&Compact Again", // LOCALIZATION_ID_MERGE_COMPACT,
 };

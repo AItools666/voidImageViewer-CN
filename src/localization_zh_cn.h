@@ -342,7 +342,7 @@ static const utf8_t *_localization_string_array_zh_cn[LOCALIZATION_ID_COUNT] =
 	"PNG", // LOCALIZATION_ID_MERGE_FMT_PNG,
 	"JPG", // LOCALIZATION_ID_MERGE_FMT_JPG,
 	"张图片，输出尺寸：", // LOCALIZATION_ID_MERGE_INFO,
-	"尚未添加图片。点「添加图片」选择 2 张及以上，原图 1:1 合成。", // LOCALIZATION_ID_MERGE_INFO_EMPTY,
+	"尚未添加图片。点「添加图片」选择 2 张及以上，小图放大填缝，大图 1:1 清晰合成。", // LOCALIZATION_ID_MERGE_INFO_EMPTY,
 	"请至少添加 2 张图片再导出。", // LOCALIZATION_ID_MERGE_NEED_TWO,
 	"选择要合并的图片（可多选）", // LOCALIZATION_ID_MERGE_OPEN_CAPTION,
 	"保存合并后的图片", // LOCALIZATION_ID_MERGE_SAVE_CAPTION,
@@ -351,7 +351,7 @@ static const utf8_t *_localization_string_array_zh_cn[LOCALIZATION_ID_COUNT] =
 	"合并后的尺寸过大（单边超过 30000 像素），请减少图片数量。", // LOCALIZATION_ID_MERGE_TOO_LARGE,
 	"合并预览（与导出结果一致）：", // LOCALIZATION_ID_MERGE_PREVIEW_LABEL,
 	"添加 2 张及以上图片后，这里会显示实际合并效果", // LOCALIZATION_ID_MERGE_PREVIEW_EMPTY,
-	"编号表示顺序；拖动后横图、竖图自动分列拼接，同类相邻，互不重叠。", // LOCALIZATION_ID_MERGE_PREVIEW_HINT,
+	"编号表示顺序；横图、竖图自动分列，小图等比放大填缝（最多 1.5 倍），大图保持 1:1 不缩小。", // LOCALIZATION_ID_MERGE_PREVIEW_HINT,
 	"自由摆放（可拖动）", // LOCALIZATION_ID_MERGE_LAYOUT_FREE,
 	"重新紧凑排布(&T)", // LOCALIZATION_ID_MERGE_COMPACT,
 };
